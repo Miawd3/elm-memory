@@ -1,0 +1,7 @@
+interface:
+  display_name: "ELM Memory Operator"
+  short_description: "Retrieve and curate local project memory"
+  default_prompt: "Use $elm-memory-operator to retrieve the smallest relevant project-memory context before acting."
+
+policy:
+  allow_implicit_invocation: true

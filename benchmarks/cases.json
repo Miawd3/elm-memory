@@ -1,0 +1,118 @@
+[
+  {
+    "id": "orion_gateway",
+    "query": "Aurora gateway PostgreSQL",
+    "expected_path": "20_projects/orion/PROJECT_HUB.md"
+  },
+  {
+    "id": "orion_storage_decision",
+    "query": "PostgreSQL durable telemetry records",
+    "expected_paths": [
+      "20_projects/orion/DECISIONS.md",
+      "20_projects/orion/PROJECT_HUB.md"
+    ]
+  },
+  {
+    "id": "orion_utc",
+    "query": "persisted timestamps UTC",
+    "expected_paths": [
+      "20_projects/orion/PROJECT_HUB.md",
+      "20_projects/orion/DECISIONS.md"
+    ]
+  },
+  {
+    "id": "orion_json_logs",
+    "query": "newline-delimited JSON stable event names",
+    "expected_path": "20_projects/orion/DECISIONS.md"
+  },
+  {
+    "id": "orion_fts",
+    "query": "SQLite FTS5 mandatory embeddings",
+    "expected_paths": [
+      "20_projects/orion/DECISIONS.md",
+      "20_projects/orion/PROJECT_HUB.md"
+    ]
+  },
+  {
+    "id": "orion_delivery",
+    "query": "parser regression suite bounded-context",
+    "expected_path": "20_projects/orion/PROJECT_HUB.md"
+  },
+  {
+    "id": "orion_current_focus",
+    "query": "nested heading exact section reads",
+    "expected_path": "20_projects/orion/ACTIVE_CONTEXT.md"
+  },
+  {
+    "id": "orion_archive_boundary",
+    "query": "exclusion archived Mercury material",
+    "expected_path": "20_projects/orion/ACTIVE_CONTEXT.md"
+  },
+  {
+    "id": "orion_next_check",
+    "query": "sanitized benchmark Aurora gateway",
+    "expected_path": "20_projects/orion/ACTIVE_CONTEXT.md"
+  },
+  {
+    "id": "lighthouse_runbooks",
+    "query": "offline runbooks signed Markdown bundles",
+    "expected_path": "20_projects/lighthouse/PROJECT_HUB.md"
+  },
+  {
+    "id": "lighthouse_atlas",
+    "query": "Atlas handbook verification sequence",
+    "expected_path": "20_projects/lighthouse/REFERENCES.md"
+  },
+  {
+    "id": "lighthouse_isolation",
+    "query": "does not share Orion telemetry architecture",
+    "expected_path": "20_projects/lighthouse/PROJECT_HUB.md"
+  },
+  {
+    "id": "lighthouse_milestone",
+    "query": "deterministic link resolution Atlas handbook",
+    "expected_paths": [
+      "20_projects/lighthouse/PROJECT_HUB.md",
+      "20_projects/lighthouse/REFERENCES.md"
+    ]
+  },
+  {
+    "id": "root_projects",
+    "query": "Orion Lighthouse synthetic projects",
+    "expected_path": "00_registry/ROOT_INDEX.md"
+  },
+  {
+    "id": "root_registry",
+    "query": "sanitized fixture projects public ELM regression suite",
+    "expected_path": "00_registry/ROOT_INDEX.md"
+  },
+  {
+    "id": "archive_mercury_default",
+    "query": "Mercury Borealis",
+    "expected_count": 0
+  },
+  {
+    "id": "archive_zephyr_default",
+    "query": "Zephyr Cobalt",
+    "expected_count": 0
+  },
+  {
+    "id": "archive_mercury_opt_in",
+    "query": "Mercury Borealis",
+    "include_archive": true,
+    "expected_path": "20_projects/orion/backups/PROJECT_HUB.old.md"
+  },
+  {
+    "id": "archive_zephyr_opt_in",
+    "query": "Zephyr Cobalt",
+    "include_archive": true,
+    "expected_path": "99_archive/LEGACY_NOTES.md"
+  },
+  {
+    "id": "lighthouse_project_filter",
+    "query": "Current State Constraint",
+    "project": "lighthouse",
+    "broad": true,
+    "expected_path": "20_projects/lighthouse/PROJECT_HUB.md"
+  }
+]
