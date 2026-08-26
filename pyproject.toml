@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "elm-memory"
-version = "0.4.0.dev0"
+version = "0.5.0.dev0"
 description = "Local, inspectable project memory and deterministic context retrieval for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,8 +27,12 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+mcp = ["mcp>=2.1.1,<3"]
+
 [project.scripts]
 elm = "elm_memory.cli:main"
+elm-mcp = "elm_memory.mcp_server:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

@@ -37,7 +37,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install local package
-        run: python -m pip install --disable-pip-version-check --no-deps -e .
+        run: python -m pip install --disable-pip-version-check -e ".[mcp]"
 
       - name: Compile Python sources
         run: python -m compileall -q src tests benchmarks
@@ -62,10 +62,13 @@ jobs:
           python-version: "3.14"
 
       - name: Install local package
-        run: python -m pip install --disable-pip-version-check --no-deps -e .
+        run: python -m pip install --disable-pip-version-check -e ".[mcp]"
 
       - name: Run sanitized benchmark
         run: python benchmarks/run_benchmark.py --assert-pass
 
       - name: Run governed-memory lifecycle demo
         run: python benchmarks/run_governance_demo.py --assert-pass
+
+      - name: Run read-only MCP equivalence demo
+        run: python benchmarks/run_mcp_demo.py --assert-pass

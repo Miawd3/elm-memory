@@ -2,11 +2,12 @@
 
 ELM is a local, inspectable project-memory and deterministic retrieval layer for coding agents. Canonical knowledge stays in Markdown; SQLite FTS5 is a disposable index that can be deleted and rebuilt.
 
-This repository is in **Phase 3 / pre-alpha**. In addition to deterministic
+This repository is in **Phase 4 / pre-alpha**. In addition to deterministic
 retrieval, stable identity, and bounded context packets, it now implements a
 governed proposal-to-claim lifecycle with reference-only evidence metadata,
-valid/recorded-time history, contradiction reporting, and recoverable canonical
-transactions. Raw evidence snapshots and MCP remain deferred.
+valid/recorded-time history, recoverable canonical transactions, and a thin
+read-only MCP adapter verified through two heterogeneous agent hosts. Raw
+evidence snapshots and MCP mutation remain deferred.
 
 ## Why ELM
 
@@ -31,13 +32,19 @@ Python 3.11 remains the provisional minimum until the first public release tag.
 python -m venv .venv
 ```
 
-Activate the environment, then install the local package:
+Activate the environment, then choose the CLI-only install or add the optional
+MCP extra when an agent host will launch the read-only server:
 
 ```bash
+# CLI only
 python -m pip install --no-deps -e .
+
+# CLI plus read-only MCP adapter
+python -m pip install -e ".[mcp]"
 ```
 
-No runtime Python dependencies are required.
+The CLI core has no runtime Python dependencies. The `mcp` extra installs the
+official MCP Python SDK for the adapter.
 
 ## Five-minute demo
 
@@ -69,6 +76,7 @@ elm read SECTION_KEY --root examples/two-agent-handoff/memory --json
 Check health:
 
 ```bash
+elm status --root examples/two-agent-handoff/memory --json
 elm doctor --root examples/two-agent-handoff/memory --json
 ```
 
@@ -103,7 +111,7 @@ task
 Available commands:
 
 ```text
-sync  rebuild  search  context  outline  read  related  stats  doctor
+sync  rebuild  status  search  context  outline  read  related  stats  doctor
 evidence add  propose  proposals list  accept  reject  defer  dispute
 supersede  delete  history  recover
 ids assign  traces cleanup
@@ -219,6 +227,31 @@ The exact canonical format, state machine, temporal semantics, and recovery
 contract are documented in
 [docs/PHASE_3_GOVERNED_MEMORY.md](docs/PHASE_3_GOVERNED_MEMORY.md).
 
+## Read-only MCP adapter
+
+Phase 4 binds one ELM root to a local stdio server and exposes exactly seven
+tools: `status`, `search`, `context`, `read`, `related`, `history`, and `stats`.
+Every tool delegates to the canonical CLI JSON contract in a separate process;
+the adapter contains no independent storage, ranking, policy, or mutation logic.
+
+Launch it with an explicit root:
+
+```bash
+elm-mcp --root /path/to/memory
+```
+
+MCP reads never sync the index and context calls never retain retrieval traces.
+An agent should call `status` first and ask an operator to run the CLI when
+`sync_required` is true. Tool annotations are host hints, not a security
+boundary. Any client able to start the local server can read content allowed by
+the bound root and ELM policy filters.
+
+Configuration examples, the exact boundary, and validation evidence are in
+[docs/PHASE_4_READ_ONLY_MCP.md](docs/PHASE_4_READ_ONLY_MCP.md). The synthetic
+[two-agent handoff](examples/two-agent-handoff/README.md) verifies the same
+accepted decision and stable section identity through Antigravity/Gemini and
+Codex; Claude Code is also supported when authenticated.
+
 ## Agent Skill
 
 A host-neutral Agent Skill is available at `skills/elm-memory-operator`. It teaches compatible coding agents when to retrieve ELM context and how to preserve authority boundaries. The CLI remains usable without skill support.
@@ -236,6 +269,8 @@ python -m compileall -q src tests benchmarks
 python -m unittest discover -s tests -v
 python benchmarks/run_benchmark.py --assert-pass
 python benchmarks/run_governance_demo.py --assert-pass
+python benchmarks/run_mcp_demo.py --assert-pass
+python examples/two-agent-handoff/run_hosts.py --assert-pass
 ```
 
 The sanitized retrieval benchmark contains 50 deterministic retrieval, context-packing,
@@ -258,11 +293,12 @@ implemented identity, migration, policy, and locking contracts are summarized in
 
 Phase order:
 
-1. public baseline and regression protection;
-2. stable identity, migrations, and concurrency;
-3. bounded context packets and privacy-safe traces;
-4. governed proposals, evidence references, claims, and temporal history (current phase);
-5. read-only MCP, followed later by controlled mutation;
+0. public baseline and regression protection;
+1. stable identity, migrations, and concurrency;
+2. bounded context packets and privacy-safe traces;
+3. governed proposals, evidence references, claims, and temporal history;
+4. read-only MCP and heterogeneous-host validation (current phase);
+5. controlled MCP mutation, only after a separate authorization design;
 6. optional semantic retrieval only after measured deterministic failures.
 
 ## License, privacy, and publication status
@@ -274,8 +310,8 @@ modification, redistribution, and commercial use under its notice and license
 conditions, and includes an explicit contributor patent grant.
 
 The GitHub repository remains a private pre-release while the external-facing
-release decisions and documentation are completed. Phase 3 validation evidence
-is recorded in [docs/PHASE_3_READINESS.md](docs/PHASE_3_READINESS.md).
+release decisions and documentation are completed. Phase 4 validation evidence
+is recorded in [docs/PHASE_4_READINESS.md](docs/PHASE_4_READINESS.md).
 
 ## Current limitations
 
@@ -287,4 +323,4 @@ is recorded in [docs/PHASE_3_READINESS.md](docs/PHASE_3_READINESS.md).
 - ELM performs no LLM summarization and cannot recover synonyms absent from the lexical corpus;
 - evidence records contain locators and hashes only; ELM does not retain or verify source payload availability;
 - deletion removes active canonical/derived ELM state but cannot erase Git history, filesystem snapshots, or external backups;
-- there is no raw evidence store, authenticated multi-user service, or MCP server yet.
+- there is no raw evidence store, authenticated multi-user service, or MCP mutation API.
