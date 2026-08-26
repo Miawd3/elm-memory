@@ -57,6 +57,19 @@ HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 WORD_RE = re.compile(r"[^\W_]+(?:[-'][^\W_]+)*", re.UNICODE)
 
 
+def configure_standard_streams() -> None:
+    """Keep machine-readable output UTF-8 even under legacy Windows code pages."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            # Test doubles and already-detached streams may not be reconfigurable.
+            continue
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -960,6 +973,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    configure_standard_streams()
     parser = build_parser()
     args = parser.parse_args()
     root = resolve_root(getattr(args, "root", None))
