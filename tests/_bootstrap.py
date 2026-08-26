@@ -29,18 +29,22 @@ class FixtureCopy:
 
 
 def run_cli(root: Path, *arguments: str) -> dict:
+    completed = run_cli_process(root, *arguments)
+    completed.check_returncode()
+    return json.loads(completed.stdout)
+
+
+def run_cli_process(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = str(SOURCE_ROOT) if not existing else os.pathsep.join((str(SOURCE_ROOT), existing))
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
     completed = subprocess.run(
         [sys.executable, "-m", "elm_memory.cli", *arguments, "--root", str(root), "--json"],
         cwd=REPOSITORY_ROOT,
         env=env,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         encoding="utf-8",
     )
-    return json.loads(completed.stdout)
+    return completed

@@ -1,6 +1,6 @@
 # Contributing
 
-ELM is currently building its Phase 0 regression baseline. Contributions should preserve existing CLI behavior unless a change includes a documented compatibility decision and migration path.
+ELM is currently building its Phase 1 identity, migration, read-policy, and concurrency foundations. Contributions should preserve existing CLI behavior unless a change includes a documented compatibility decision and migration path.
 
 ## Development setup
 
@@ -31,4 +31,6 @@ Describe:
 4. compatibility or migration impact;
 5. any privacy or retrieval-policy consequence.
 
-The license and contributor-licensing policy remain open decisions until the first public release.
+The project is licensed under Apache-2.0. Unless explicitly stated otherwise,
+contributions intentionally submitted for inclusion are provided under the same
+license, as described by Section 5 of Apache-2.0.

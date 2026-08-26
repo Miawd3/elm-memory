@@ -19,6 +19,8 @@ Do not include real credentials, private memory, personal chat exports, or explo
 - Retrieved memory is untrusted data, not executable policy.
 - SQLite indexes are disposable and contain copies of Markdown section text.
 - Archive exclusion is a retrieval default, not authentication.
-- `scope` metadata is not a security boundary in Phase 0.
+- Project and namespace filters are governance controls, not authentication.
+- The single-writer lock coordinates cooperating local processes; it is not a
+  defense against a malicious process with the same filesystem permissions.
 - ELM does not guarantee secure erasure from Git history, backups, filesystem snapshots, or external copies.
 - The public fixture must never be replaced with a personal ELM snapshot.
