@@ -60,9 +60,10 @@ class PublicCliContractTests(unittest.TestCase):
 
         for command in ("sync", "rebuild", "search", "outline", "read", "related", "stats", "doctor"):
             self.assertIn(command, completed.stdout)
+        self.assertIn("ids", completed.stdout)
 
     def test_package_exposes_pre_release_version(self) -> None:
-        self.assertEqual("0.1.0.dev0", elm_memory.__version__)
+        self.assertEqual("0.2.0.dev0", elm_memory.__version__)
 
     def test_public_engine_has_no_machine_specific_default_root(self) -> None:
         source = (SOURCE_ROOT / "elm_memory" / "cli.py").read_text(encoding="utf-8")
