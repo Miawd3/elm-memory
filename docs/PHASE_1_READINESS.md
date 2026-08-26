@@ -1,6 +1,6 @@
 # Phase 1 Readiness
 
-Status: implementation-complete locally; hosted CI pending
+Status: implementation-complete and hosted CI verified
 
 Evaluated: 2026-08-26
 
@@ -51,14 +51,20 @@ Package version: `0.2.0.dev0`
   filesystem permissions; it is not authenticated authorization.
 - The benchmark remains synthetic and lexical and does not measure billed model
   tokens or end-to-end agent task success.
-- Linux and Python 3.11-3.13 require the hosted matrix before Phase 1 is marked
-  fully verified.
+- The hosted matrix proves supported interpreter and OS compatibility for the
+  sanitized suite; it does not reproduce the private full-corpus probe.
 
-## Hosted acceptance gate
+## Hosted acceptance result
 
-Phase 1 is fully verified when the draft pull request passes the existing
-Windows/Linux Python 3.11-3.14 matrix and sanitized benchmark job. Claims,
-evidence snapshots, context packing, and MCP remain outside this phase.
+Phase 1 commit `488ab2970e37332e1538fef18117f1a62a949ee5` passed both
+GitHub Actions contexts for draft PR 4:
+
+- push run `32948155121`: nine of nine jobs passed;
+- pull-request run `32948172792`: nine of nine jobs passed.
+
+Each run covered the sanitized benchmark plus Python 3.11-3.14 on Ubuntu and
+Windows. Claims, evidence snapshots, context packing, and MCP remain outside
+this phase.
 
 ## Remaining public-release work
 
