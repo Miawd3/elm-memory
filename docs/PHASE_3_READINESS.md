@@ -1,10 +1,10 @@
 # Phase 3 Readiness Evidence
 
-Status: local implementation verified; hosted cross-platform CI pending
+Status: implementation merged, cross-platform CI verified, and live installation accepted
 
 Date: 2026-08-26
 
-Branch: `codex/phase-3-governed-claims`
+Merge commit: `4e3b1a4e8870c5f74141384082e007c1bae36d91` (PR 8)
 
 ## Scope
 
@@ -28,8 +28,9 @@ public repository launch.
 | Operator skill validation | pass | Official `quick_validate.py`: `Skill is valid!` |
 | Wheel build and clean install | pass | `elm_memory-0.4.0.dev0-py3-none-any.whl`; imported from isolated venv |
 | Private-corpus compatibility copy | pass | 652 Markdown files, zero changed/added, zero rebuild/doctor errors |
-| GitHub Windows/Linux Python matrix | pending | Python 3.11–3.14 |
+| GitHub Windows/Linux Python matrix | pass | Two PR contexts and post-merge run 33010899876; Python 3.11–3.14 |
 | Repository hygiene and workflow policy | pass | SHA-pinned actions, read-only token, unprivileged triggers, no secrets |
+| Live local installation | pass | Package 0.4.0.dev0, matching skill, schema v2, doctor 0, idempotent sync, SQLite `ok` |
 
 ## Tested invariants
 
@@ -66,7 +67,7 @@ the synthetic fixture and verifies all of the following:
 4. the old claim remains available through explicit history;
 5. the replacement claim becomes current;
 6. both claims remain in canonical history;
-7. delete-and-rebuild preserves the replacement claim;
+7. deleting the disposable index and rebuilding preserves the replacement claim;
 8. evidence metadata is reference-only and contains no payload field;
 9. `doctor` returns zero issues;
 10. SQLite `PRAGMA quick_check` returns `ok`.
@@ -92,11 +93,10 @@ then deleted after validation. The live ELM was not mutated. Results:
 
 ## Release gate
 
-Phase 3 is ready to merge and install only after all pending rows above pass on
-the final commit. A failure in the package, skill, private-copy compatibility,
-or hosted matrix blocks live installation. Live installation must preserve a
-restorable package/skill backup and must finish with clean `sync`, `doctor`, and
-SQLite integrity checks.
+Every Phase 3 release gate passed. PR 8 was merged only after the complete
+Windows/Linux matrix succeeded; the post-merge `main` matrix then passed again.
+The live installation preserved restorable package, skill, index, and milestone
+backups and finished with clean `sync`, zero-issue `doctor`, and SQLite integrity.
 
 ## Known boundaries
 
