@@ -221,8 +221,9 @@ ELM is licensed under the [Apache License 2.0](LICENSE). It permits use,
 modification, redistribution, and commercial use under its notice and license
 conditions, and includes an explicit contributor patent grant.
 
-The GitHub repository remains a private pre-release while Phase 2 is validated
-and the external-facing release documentation is completed.
+The GitHub repository remains a private pre-release while the external-facing
+release decisions and documentation are completed. Phase 2 validation evidence
+is recorded in [docs/PHASE_2_READINESS.md](docs/PHASE_2_READINESS.md).
 
 ## Current limitations
 

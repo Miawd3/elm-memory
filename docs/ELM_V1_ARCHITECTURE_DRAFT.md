@@ -1,6 +1,6 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: active staged architecture; Phase 1 verified; Phase 2 implementation under validation
+Status: active staged architecture; Phases 1 and 2 implementation verified
 
 Date: 2026-08-26
 
@@ -565,7 +565,7 @@ Acceptance:
 
 Goal: deliver the most visible user benefit before expanding the memory ontology.
 
-Status: implementation contract ratified; pre-release validation in progress.
+Status: implementation and pre-release validation complete.
 
 Implementation slices:
 

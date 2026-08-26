@@ -2,9 +2,9 @@
 
 ## Current phase
 
-Phase 1 is implemented and verified. Phase 2 is the active authorized slice:
-bounded deterministic context packets, privacy-minimized disposable retrieval
-traces, retention cleanup, and evaluation. Do not begin claims, evidence
+Phases 1 and 2 are implemented and verified: stable foundations, bounded
+deterministic context packets, privacy-minimized disposable retrieval traces,
+retention cleanup, and comparative evaluation. Do not begin claims, evidence
 snapshots, proposals, temporal history, or MCP work until Phase 3 is explicitly
 authorized.
 
@@ -36,7 +36,7 @@ When modifying the Agent Skill, also run its `quick_validate.py` check. When mod
 
 ## Publication boundary
 
-Apache-2.0 is the accepted project license and hosted Phase 1 CI is verified.
-Phase 2 still requires hosted CI and private-copy acceptance. No public tag is
-ready until the repository/package name, minimum Python version, and
-external-facing release documentation are ratified or completed.
+Apache-2.0 is the accepted project license and hosted Phase 2 CI plus
+private-copy acceptance are verified. No public tag is ready until the
+repository/package name, minimum Python version, and external-facing release
+documentation are ratified or completed.
