@@ -1,8 +1,8 @@
 # Phase 0 Release Readiness
 
-Status: Phase 0 implementation complete locally; not ready for a public tag
+Status: Phase 0 private baseline published and verified; not ready for a public tag
 
-Evaluated: 2026-08-25
+Evaluated: 2026-08-26
 
 Package version: `0.1.0.dev0`
 
@@ -22,23 +22,32 @@ Package version: `0.1.0.dev0`
 - CI actions are pinned to full commit SHAs and the token is read-only.
 - A clean export from the Git index passes all 26 tests, the 20-case benchmark, compilation, and skill validation.
 - The privacy/secret-pattern scan and `git diff --cached --check` pass.
+- The approved bootstrap commit is published to the private `Miawd3/elm-memory`
+  repository on `main`.
+- Hosted CI run `32943414897` passes all nine jobs: the sanitized benchmark and
+  Python 3.11-3.14 on both Ubuntu and Windows.
 
 ## Evidence limits
 
-- Local validation covers Windows and Python 3.14.3 only.
-- Linux and older Python versions are configured in CI but have not run on GitHub yet.
+- Local validation covers Windows and Python 3.14.3; hosted CI additionally
+  covers Ubuntu and Windows on Python 3.11-3.14.
 - The benchmark is synthetic and lexical; it does not establish general semantic-memory quality.
 - Search latency includes Python subprocess startup in the benchmark harness.
 - No actual model token billing or end-to-end agent task outcome is measured.
+- GitHub currently emits a non-failing Node.js 20 deprecation annotation for the
+  pinned `actions/checkout` revision while executing it under Node.js 24.
 
 ## Blocking decisions before public publication
 
 1. Select a license and add `LICENSE`.
 2. Ratify or change the repository and distribution name `elm-memory`.
 3. Ratify or change the provisional minimum Python version, currently 3.11.
-4. Create the GitHub repository and run the complete hosted CI matrix.
+4. Refresh the pinned checkout action to a native Node.js 24 release and rerun
+   hosted CI.
 5. Enable GitHub private vulnerability reporting and update `SECURITY.md`.
 
 ## Phase 0 completion gate
 
-Phase 0 is implementation-complete locally. It becomes public-release-ready only after all blocking decisions above are resolved, the first commit uses an approved public identity, and hosted CI passes.
+Phase 0 now has a verified private baseline. It becomes public-release-ready only
+after all blocking decisions above are resolved and the release documentation is
+reviewed for an external audience.
