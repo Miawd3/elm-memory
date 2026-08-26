@@ -4,9 +4,11 @@ Status: implementation-complete and hosted CI verified
 
 Evaluated: 2026-08-26
 
-Package version: `0.3.0.dev0`
+Package version: `0.3.0.dev1`
 
-Implementation commit: `64f85394b656d7b4143c49a19bc9aeaf22a6d3be`
+Base implementation commit: `64f85394b656d7b4143c49a19bc9aeaf22a6d3be`
+
+Archive-identity hotfix commit: `0b004ace166f301407575549042a5a03f5eeec88`
 
 ## Implemented scope
 
@@ -16,6 +18,9 @@ Implementation commit: `64f85394b656d7b4143c49a19bc9aeaf22a6d3be`
 - Strict FTS5 retrieval with broad fallback only after an empty strict result.
 - Bounded current-state/constraint supplements that preserve all active read
   filters.
+- Path-bound projections for exact archive copies that retain an active
+  document UID, preventing derived-index identity collisions without rewriting
+  backup bytes.
 - Atomic metadata-only retrieval traces with raw task text disabled by default.
 - Explicit raw-query opt-in, trace disablement, declared expiry, and
   preview/apply retention cleanup.
@@ -24,7 +29,7 @@ Implementation commit: `64f85394b656d7b4143c49a19bc9aeaf22a6d3be`
 
 ## Local acceptance
 
-- 56 unit, integration, CLI-contract, identity, migration, concurrency,
+- 57 unit, integration, CLI-contract, identity, migration, concurrency,
   read-policy, context, trace, CI-policy, and hygiene tests pass on Windows with
   Python 3.14.3.
 - Compilation passes for `src`, `tests`, and `benchmarks`.
@@ -38,10 +43,10 @@ Implementation commit: `64f85394b656d7b4143c49a19bc9aeaf22a6d3be`
 ## Package acceptance
 
 - A pure-Python wheel builds as
-  `elm_memory-0.3.0.dev0-py3-none-any.whl`.
+  `elm_memory-0.3.0.dev1-py3-none-any.whl`.
 - Its validation-build SHA-256 was
-  `E4CD7F3583F74666BF58047696F19BEE611D0E780B90DEC50B2FB56F0550359C`.
-- An isolated Python 3.11 target installation exposes version `0.3.0.dev0` and
+  `A44BA7931752E449986FAA30F9ABF4793DA0023CE8110E1CCD50D25C25CA1C3F`.
+- An isolated Python 3.11 target installation exposes version `0.3.0.dev1` and
   the `context` and `traces` commands.
 
 The validation wheel was temporary. Reproducible release artifacts will be
@@ -66,6 +71,12 @@ live corpus:
 - SHA-256 comparison found zero Markdown changes in both the temporary copy and
   live corpus.
 
+A second 652-file private-copy probe added an exact Markdown backup containing
+the active document's UID. Rebuild and final sync completed with zero errors;
+the active projection retained its UID, the backup projection used a null UID
+and path-bound section key, `doctor` and `quick_check` passed, and neither the
+backup nor live canonical bytes changed.
+
 The temporary copy and its derived trace/index state were removed after the
 probe.
 
@@ -80,6 +91,12 @@ passed both GitHub Actions contexts for private PR 6:
 Each run covered the 50-case benchmark plus Python 3.11–3.14 on Ubuntu and
 Windows. The workflow retained read-only token permissions, unprivileged
 triggers, full-SHA action pins, and disabled checkout credential persistence.
+
+Archive hotfix commit `0b004ace166f301407575549042a5a03f5eeec88` then passed
+the same two nine-job contexts for private PR 7:
+
+- push run `32960345662`;
+- pull-request run `32960348574`.
 
 ## Evidence limits
 
