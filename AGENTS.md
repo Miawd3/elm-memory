@@ -2,7 +2,11 @@
 
 ## Current phase
 
-Phase 1 is implemented and verified: stable identity, versioned disposable-index migrations, consistent read policy, and single-writer concurrency. Do not begin context packing, claims, evidence snapshots, or MCP work until the next architecture phase is explicitly authorized.
+Phase 1 is implemented and verified. Phase 2 is the active authorized slice:
+bounded deterministic context packets, privacy-minimized disposable retrieval
+traces, retention cleanup, and evaluation. Do not begin claims, evidence
+snapshots, proposals, temporal history, or MCP work until Phase 3 is explicitly
+authorized.
 
 ## Invariants
 
@@ -13,6 +17,9 @@ Phase 1 is implemented and verified: stable identity, versioned disposable-index
 - Repository implementation truth outranks stored memory for current code facts.
 - Backups and `99_archive` remain excluded from ordinary retrieval.
 - Do not introduce mandatory hosted services, embeddings, model APIs, or database daemons.
+- A rendered context packet must never exceed its requested deterministic token estimate.
+- Context must label authority/status, preserve exact source locators, and quote retrieved bodies as untrusted data.
+- Retrieval traces contain no source body and no raw task text by default; they remain disposable runtime state.
 - Do not commit personal ELM data, raw chats, credentials, terminal dumps, private bootstrap archives, or user-specific absolute paths.
 
 ## Validation
@@ -29,4 +36,7 @@ When modifying the Agent Skill, also run its `quick_validate.py` check. When mod
 
 ## Publication boundary
 
-Apache-2.0 is the accepted project license and hosted Phase 1 CI is verified. No public tag is ready until the repository/package name, minimum Python version, and external-facing release documentation are ratified or completed.
+Apache-2.0 is the accepted project license and hosted Phase 1 CI is verified.
+Phase 2 still requires hosted CI and private-copy acceptance. No public tag is
+ready until the repository/package name, minimum Python version, and
+external-facing release documentation are ratified or completed.
