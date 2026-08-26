@@ -103,6 +103,10 @@ HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 WORD_RE = re.compile(r"[^\W_]+(?:[-'][^\W_]+)*", re.UNICODE)
 
 
+class ReadOnlyIndexError(RuntimeError):
+    """Raised when a read-only command cannot safely use the disposable index."""
+
+
 def configure_standard_streams() -> None:
     """Keep machine-readable output UTF-8 even under legacy Windows code pages."""
     for stream in (sys.stdout, sys.stderr):
@@ -178,6 +182,36 @@ def connect(
         con.close()
         raise
     return con
+
+
+def connect_readonly(root: Path, *, lock_timeout: float = 10.0) -> sqlite3.Connection:
+    """Open an existing compatible index without creating or migrating anything."""
+    p = db_path(root)
+    if not p.is_file():
+        raise ReadOnlyIndexError(
+            f"ELM index does not exist: {p}. Run `elm rebuild` before read-only access."
+        )
+    try:
+        con = sqlite3.connect(
+            f"{p.resolve().as_uri()}?mode=ro",
+            uri=True,
+            timeout=max(0.1, lock_timeout),
+        )
+        con.row_factory = sqlite3.Row
+        con.execute(f"PRAGMA busy_timeout={max(1, int(lock_timeout * 1000))}")
+        con.execute("PRAGMA query_only=ON")
+        version = schema_version(con)
+        if version != INDEX_SCHEMA_VERSION:
+            con.close()
+            raise ReadOnlyIndexError(
+                "ELM index schema is not ready for read-only access: "
+                f"expected {INDEX_SCHEMA_VERSION}, found {version!r}. Run `elm sync` or `elm rebuild`."
+            )
+        return con
+    except ReadOnlyIndexError:
+        raise
+    except sqlite3.Error as exc:
+        raise ReadOnlyIndexError(f"ELM index could not be opened read-only: {exc}") from exc
 
 
 def relpath(root: Path, path: Path) -> str:
@@ -978,6 +1012,98 @@ def command_stats(args, con: sqlite3.Connection, root: Path):
     emit(out, args.json)
 
 
+def status_snapshot(root: Path) -> dict:
+    """Describe read-only index readiness without creating or refreshing derived state."""
+    p = db_path(root)
+    pending = pending_transactions(root)
+    result = {
+        "root": str(root),
+        "database": str(p),
+        "index_exists": p.is_file(),
+        "index_schema_version": None,
+        "expected_index_schema_version": INDEX_SCHEMA_VERSION,
+        "schema_compatible": False,
+        "quick_check": None,
+        "sync_required": True,
+        "indexed_documents": 0,
+        "markdown_files": sum(1 for _ in iter_markdown(root)),
+        "changed_or_unindexed_files": [],
+        "removed_index_entries": [],
+        "pending_transaction_count": len(pending),
+        "pending_transactions": pending,
+        "healthy": False,
+        "errors": [],
+    }
+    if not p.is_file():
+        result["errors"].append("index_missing")
+        return result
+
+    con: sqlite3.Connection | None = None
+    try:
+        con = sqlite3.connect(
+            f"{p.resolve().as_uri()}?mode=ro",
+            uri=True,
+            timeout=2.0,
+        )
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only=ON")
+        version = schema_version(con)
+        result["index_schema_version"] = version
+        result["schema_compatible"] = version == INDEX_SCHEMA_VERSION
+        result["quick_check"] = con.execute("PRAGMA quick_check").fetchone()[0]
+        if not result["schema_compatible"]:
+            result["errors"].append("incompatible_schema")
+            return result
+
+        indexed = {
+            row["path"]: (
+                int(row["mtime_ns"]),
+                int(row["size_bytes"]),
+                row["content_hash"],
+            )
+            for row in con.execute(
+                "SELECT path,mtime_ns,size_bytes,content_hash FROM documents"
+            )
+        }
+        current: dict[str, tuple[int, int, str]] = {}
+        for path in iter_markdown(root):
+            raw = path.read_bytes()
+            stat = path.stat()
+            current[relpath(root, path)] = (
+                stat.st_mtime_ns,
+                stat.st_size,
+                sha256_bytes(raw),
+            )
+        changed = sorted(
+            path for path, signature in current.items() if indexed.get(path) != signature
+        )
+        removed = sorted(path for path in indexed if path not in current)
+        result["indexed_documents"] = len(indexed)
+        result["changed_or_unindexed_files"] = changed[:100]
+        result["removed_index_entries"] = removed[:100]
+        result["sync_required"] = bool(changed or removed)
+        if len(changed) > 100 or len(removed) > 100:
+            result["errors"].append("freshness_report_truncated")
+    except (OSError, sqlite3.Error) as exc:
+        result["errors"].append(f"index_read_failed: {exc}")
+    finally:
+        if con is not None:
+            con.close()
+
+    result["healthy"] = bool(
+        result["schema_compatible"]
+        and result["quick_check"] == "ok"
+        and not result["sync_required"]
+        and result["pending_transaction_count"] == 0
+        and not result["errors"]
+    )
+    return result
+
+
+def command_status(args, root: Path) -> None:
+    emit(status_snapshot(root), args.json)
+
+
 def command_doctor(args, con: sqlite3.Connection, root: Path):
     if not args.no_sync:
         _sync_from_args(args, con, root)
@@ -1509,6 +1635,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("stats", help="Show index counts and health summary.")
     add_common(p); p.add_argument("--no-sync", action="store_true")
 
+    p = sub.add_parser("status", help="Report read-only index readiness without refreshing derived state.")
+    add_common(p)
+
     p = sub.add_parser("doctor", help="Report metadata/link/duplicate issues without editing ELM.")
     add_common(p); p.add_argument("--limit", type=int, default=100); p.add_argument("--no-sync", action="store_true")
 
@@ -1620,6 +1749,9 @@ def main() -> int:
     root = resolve_root(getattr(args, "root", None))
     if not root.is_dir():
         raise SystemExit(f"ELM root is not a directory: {root}")
+    if args.command == "status":
+        command_status(args, root)
+        return 0
     if args.command == "ids":
         try:
             if args.ids_command == "assign":
@@ -1646,11 +1778,17 @@ def main() -> int:
             return 2
 
     try:
-        con = connect(
-            root,
-            lock_timeout=args.lock_timeout,
-            recover_stale=args.recover_stale_lock,
-        )
+        if args.command == "read" or bool(getattr(args, "no_sync", False)):
+            con = connect_readonly(root, lock_timeout=args.lock_timeout)
+        else:
+            con = connect(
+                root,
+                lock_timeout=args.lock_timeout,
+                recover_stale=args.recover_stale_lock,
+            )
+    except ReadOnlyIndexError as exc:
+        emit_error("read_only_index_not_ready", str(exc), args.json)
+        return 2
     except WriterLockError as exc:
         emit_error("writer_lock_unavailable", str(exc), args.json, exc.record)
         return 2

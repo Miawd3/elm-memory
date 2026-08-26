@@ -1,6 +1,6 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: active staged architecture; Phases 1–3 implemented and verified
+Status: active staged architecture; Phases 1–4 implemented and verified
 
 Date: 2026-08-26
 
@@ -20,7 +20,10 @@ Recommended definition:
 
 It helps heterogeneous agents recover bounded, source-linked project context without sharing full chat histories or depending on a hosted memory service.
 
-The first public release is not the full claims/evidence/MCP platform. It is a clean, tested release of the working deterministic core. Stateful claims, temporal history, and controlled multi-agent mutation follow only after the storage and identity contracts are safe.
+The first public release remains a clean, tested deterministic core with
+governed claims and a read-only interoperability adapter. Authenticated actors,
+raw evidence payloads, and controlled MCP mutation remain later designs rather
+than implicit capabilities.
 
 ## 2. Authority and status
 
@@ -36,7 +39,7 @@ The first public release is not the full claims/evidence/MCP platform. It is a c
 
 - Canonical project knowledge is stored in Markdown.
 - `.elm/index.sqlite` is disposable and rebuildable.
-- The current CLI provides `sync`, `rebuild`, `search`, `outline`, `read`, `related`, `stats`, `doctor`, and explicit `ids assign` mutation.
+- The current CLI provides `sync`, `rebuild`, `status`, `search`, `context`, `outline`, `read`, `related`, `history`, `stats`, `doctor`, governed lifecycle commands, and explicit `ids assign` mutation.
 - Retrieval uses SQLite FTS5 and section-level reads.
 - Archive, project, and namespace policy applies to search, outline, read, and related, including direct-ID reads.
 - SQLite integer IDs remain compatibility references; optional document UUIDs and derived section keys provide rebuild-stable public identity.
@@ -45,11 +48,12 @@ The first public release is not the full claims/evidence/MCP platform. It is a c
 - The repository is a sanitized private GitHub pre-release and contains no personal ELM snapshot or private bootstrap artifact.
 - Phase 2 is complete: bounded deterministic context packets, privacy-minimized disposable retrieval traces, retention cleanup, and comparative evaluation are implemented.
 - Phase 3 is merged and live-validated: immutable proposals, reference-only evidence metadata, canonical claim Markdown, explicit lifecycle transitions, valid/recorded-time history, contradictions, tombstones, and recoverable transactions.
-- Raw evidence snapshots, MCP, embeddings, and model summarization remain deferred.
+- Phase 4 is implemented and host-validated: a seven-tool read-only MCP adapter delegates to the CLI JSON contract, reports exact index readiness, and returns equivalent stable source identities through Antigravity/Gemini and Codex.
+- Raw evidence snapshots, controlled MCP mutation, embeddings, and model summarization remain deferred.
 
 ### Provisional design
 
-The exact implemented Phase 1–3 contracts are repository truth and are linked
+The exact implemented Phase 1–4 contracts are repository truth and are linked
 from their phase documents. Later roadmap phases remain proposed until explicit
 authorization and implementation validation.
 
@@ -620,6 +624,11 @@ Acceptance:
 
 Goal: prove one core works across agents.
 
+Status: implementation, parity validation, failure-isolation testing, and a
+synthetic Antigravity/Gemini-to-Codex host demonstration are complete. The
+frozen boundary is documented in
+[PHASE_4_READ_ONLY_MCP.md](PHASE_4_READ_ONLY_MCP.md).
+
 Implementation slices:
 
 1. Add a thin read-only MCP adapter.
@@ -719,9 +728,11 @@ The first share-worthy demonstration should be small and reproducible:
 8. ELM records a new proposal and supersedes the old claim after ratification.
 9. A current query returns the new state; a historical query returns the old state with provenance.
 
-The sanitized Phase 3 lifecycle smoke test now exercises this flow through the
-CLI. A later heterogeneous-host demonstration remains part of Phase 4 and must
-not imply that MCP or authenticated actors already exist.
+The sanitized Phase 3 lifecycle smoke test exercises the governed state changes
+through the CLI. The Phase 4 host harness then gives the resulting accepted
+state to Antigravity/Gemini and Codex through the same read-only MCP adapter;
+both must return the same stable source identity. This proves compatibility,
+not authenticated actors or multi-tenant isolation.
 
 ## 19. Explicitly deferred
 
@@ -753,13 +764,13 @@ first public tag.
 
 ## 21. Immediate next implementation slice
 
-Phase 3 is complete. No Phase 4 implementation slice is active yet.
+Phase 4 is complete. No Phase 5 implementation slice is active yet.
 
-The next proposed gate is **Phase 4 read-only MCP and a heterogeneous-agent
-demo**. It requires explicit authorization before implementation. Its boundary
-remains a thin adapter over the verified CLI/read policy: no mutation tools, raw
-evidence snapshots, embeddings, authenticated multi-user scopes, or model
-summarization.
+The next proposed gate is **Phase 5 controlled MCP mutation**. It requires a
+separate explicit authorization and an actor-binding/review design before code
+is added. Direct arbitrary Markdown writes, raw evidence snapshots, embeddings,
+authenticated multi-user scopes, and model summarization remain outside that
+gate.
 
 ## 22. Supersession rule
 

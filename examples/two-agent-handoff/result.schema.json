@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "host": {
+      "type": "string",
+      "enum": ["antigravity", "claude", "codex"]
+    },
+    "project": {
+      "type": "string",
+      "const": "orion"
+    },
+    "database": {
+      "type": "string",
+      "const": "PostgreSQL 17"
+    },
+    "source_path": {
+      "type": "string",
+      "const": "20_projects/orion/DECISIONS.md"
+    },
+    "section_key": {
+      "type": "string",
+      "pattern": "^section_[0-9a-f-]+$"
+    }
+  },
+  "required": ["host", "project", "database", "source_path", "section_key"]
+}
