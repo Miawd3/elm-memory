@@ -33,6 +33,9 @@ If no root is available, say so instead of inventing memory claims.
    elm search "task terms" --json
    ```
 
+   If the package is installed but the console script is not on `PATH`, invoke
+   the same CLI as `python -m elm_memory search "task terms" --json`.
+
 2. Inspect candidate paths, headings, status, snippets, token estimates,
    `document_uid`, and stable `section_key` values.
 3. Read one exact section:
