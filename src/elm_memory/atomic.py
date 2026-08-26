@@ -1,4 +1,4 @@
-"""Crash-safe helpers for explicit canonical Markdown mutations."""
+"""Crash-safe helpers for canonical and disposable local file writes."""
 from __future__ import annotations
 
 import os

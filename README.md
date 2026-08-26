@@ -2,7 +2,10 @@
 
 ELM is a local, inspectable project-memory and deterministic retrieval layer for coding agents. Canonical knowledge stays in Markdown; SQLite FTS5 is a disposable index that can be deleted and rebuilt.
 
-This repository is in **Phase 1 / pre-alpha**. It provides the tested deterministic retrieval engine plus rebuild-stable public locators, versioned disposable-index migrations, explicit document-ID assignment, consistent read-policy filtering, and cross-platform single-writer coordination. Bounded context packets, governed claims, and MCP are planned but are not implemented yet.
+This repository is in **Phase 2 / pre-alpha**. In addition to the deterministic
+retrieval and stable-identity foundations, it compiles bounded source-linked
+context packets and records optional privacy-minimized local traces. Governed
+claims, evidence snapshots, and MCP remain deferred.
 
 ## Why ELM
 
@@ -49,6 +52,13 @@ Search for a task-relevant section:
 elm search "Aurora PostgreSQL" --root examples/two-agent-handoff/memory --json
 ```
 
+Compile a bounded packet for an agent:
+
+```bash
+elm context "Continue the Aurora PostgreSQL work" --budget 700 \
+  --root examples/two-agent-handoff/memory --json --no-trace
+```
+
 Read the returned stable `section_key` (legacy numeric section IDs remain accepted):
 
 ```bash
@@ -82,16 +92,18 @@ There is no machine-specific default path in the public engine.
 
 ```text
 task
-  -> elm search
-  -> compact candidate manifests
-  -> elm read for one exact section
+  -> elm context with an explicit budget
+  -> authority warnings and compact source manifests
+  -> selected whole sections quoted as untrusted memory data
+  -> elm read for exact expansion when needed
   -> elm outline or elm related only when expansion is needed
 ```
 
 Available commands:
 
 ```text
-sync  rebuild  search  outline  read  related  stats  doctor  ids assign
+sync  rebuild  search  context  outline  read  related  stats  doctor
+ids assign  traces cleanup
 ```
 
 The index lives at `<root>/.elm/index.sqlite`. It is derived state and must never be the only location of durable knowledge.
@@ -133,6 +145,33 @@ mutations use `<root>/.elm/writer.lock`; a competing writer waits up to
 `--lock-timeout` or exits cleanly. Recovery of a dead writer's lock requires the
 explicit `--recover-stale-lock` flag and is recorded in derived runtime state.
 
+## Bounded context and traces
+
+`elm context TASK --budget TOKENS` uses deterministic FTS5 retrieval, adds a
+small project-state/constraint supplement when scope can be resolved, and
+packs whole sections under a hard estimated-token limit. A section that does
+not fit is represented only by its manifest and stable `elm://section/...`
+locator; ELM does not silently truncate it or summarize it with a model.
+
+The packet always states that current user instructions and verified repository
+state outrank memory. Retrieved bodies are Markdown-quoted and labeled
+`untrusted_memory_data`. Project, namespace, status, tag, path, and archive
+filters remain enforceable.
+
+By default, a context call writes one disposable JSON trace under
+`<root>/.elm/traces/`. It contains the task hash, filters, section keys, timing,
+and token estimate, but no source body and no raw task text. Use `--no-trace`
+for sensitive calls or `--trace-query-text` only as an explicit opt-in. Preview
+expired trace cleanup before applying it:
+
+```bash
+elm traces cleanup --root /path/to/memory --dry-run --json
+elm traces cleanup --root /path/to/memory --apply --json
+```
+
+The exact Phase 2 contract is documented in
+[docs/PHASE_2_BOUNDED_CONTEXT.md](docs/PHASE_2_BOUNDED_CONTEXT.md).
+
 ## Agent Skill
 
 A host-neutral Agent Skill is available at `skills/elm-memory-operator`. It teaches compatible coding agents when to retrieve ELM context and how to preserve authority boundaries. The CLI remains usable without skill support.
@@ -151,7 +190,12 @@ python -m unittest discover -s tests -v
 python benchmarks/run_benchmark.py --assert-pass
 ```
 
-The sanitized benchmark contains 20 deterministic retrieval, project-filter, and archive-isolation cases. It is a regression suite, not a claim of general semantic-memory quality or billed-token savings.
+The sanitized benchmark contains 50 deterministic retrieval, context-packing,
+project-filter, and archive-isolation cases. It compares no-memory, full-file,
+search/read, and context-pack estimated-token baselines. Retrieval quality and
+budget compliance are reported separately from task outcome, which the suite
+does not measure. It is not a claim of general semantic-memory quality or
+billed-token savings.
 
 ## Architecture boundary
 
@@ -164,7 +208,7 @@ Phase order:
 
 1. public baseline and regression protection;
 2. stable identity, migrations, and concurrency;
-3. bounded context packets and privacy-safe traces;
+3. bounded context packets and privacy-safe traces (current phase);
 4. governed proposals, evidence references, claims, and temporal history;
 5. read-only MCP, followed later by controlled mutation;
 6. optional semantic retrieval only after measured deterministic failures.
@@ -177,12 +221,15 @@ ELM is licensed under the [Apache License 2.0](LICENSE). It permits use,
 modification, redistribution, and commercial use under its notice and license
 conditions, and includes an explicit contributor patent grant.
 
-The GitHub repository remains a private pre-release while Phase 1 is validated
-and the external-facing release documentation is completed.
+The GitHub repository remains a private pre-release while the external-facing
+release decisions and documentation are completed. Phase 2 validation evidence
+is recorded in [docs/PHASE_2_READINESS.md](docs/PHASE_2_READINESS.md).
 
 ## Current limitations
 
 - document UIDs are optional; without one, a section key is path-bound and changes when its document moves;
 - namespace and archive filters are governance controls, not authentication between mutually untrusted OS users;
 - canonical mutations are intentionally serialized through one writer rather than supporting simultaneous writers;
-- there is no `elm context`, claims lifecycle, evidence store, or MCP server yet.
+- deterministic token accounting is a model-neutral character estimate, not a vendor tokenizer or billed-token measurement;
+- Phase 2 performs no LLM summarization and cannot recover synonyms absent from the lexical corpus;
+- there is no claims lifecycle, evidence store, temporal history, or MCP server yet.

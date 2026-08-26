@@ -1,6 +1,6 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: active staged architecture; Phase 1 implementation verified
+Status: active staged architecture; Phases 1 and 2 implementation verified
 
 Date: 2026-08-26
 
@@ -43,6 +43,8 @@ The first public release is not the full claims/evidence/MCP platform. It is a c
 - The disposable index has an explicit schema version and an in-place migration from the unversioned Phase 0 schema.
 - The package has unit, integration, migration, concurrency, policy, and CLI-contract tests plus a sanitized benchmark.
 - The repository is a sanitized private GitHub pre-release and contains no personal ELM snapshot or private bootstrap artifact.
+- Phase 2 is explicitly authorized. Its ratified scope is bounded deterministic context packets, privacy-minimized disposable retrieval traces, retention cleanup, and comparative evaluation.
+- Claims, proposals, evidence snapshots, temporal history, MCP, embeddings, and model summarization remain deferred.
 
 ### Provisional design
 
@@ -563,6 +565,8 @@ Acceptance:
 
 Goal: deliver the most visible user benefit before expanding the memory ontology.
 
+Status: implementation and pre-release validation complete.
+
 Implementation slices:
 
 1. Add `elm context <task> --budget <tokens>`.
@@ -738,22 +742,18 @@ These do not block Phase 1 development. They do block the first public tag.
 
 ## 21. Immediate next implementation slice
 
-Do not implement claims, evidence snapshots, context packing, or MCP mutation in
-this slice.
+The active slice is **Phase 2 bounded context and evaluation traces**:
 
-The active slice is **Phase 1 foundations**:
+1. compile whole, source-linked sections under a requested deterministic budget;
+2. preserve authority and read-policy boundaries in every packet;
+3. record privacy-minimized disposable traces with raw task text disabled by default;
+4. provide preview/apply retention cleanup;
+5. compare no-memory, full-file, search/read, and context-pack baselines across
+   at least 50 carefully sanitized cases;
+6. verify the package and skill on Windows/Linux CI and on a private-corpus copy.
 
-1. version the disposable index schema and migrate the unversioned Phase 0 index;
-2. parse optional document UUIDs and derive rebuild-stable section keys;
-3. expose explicit, backed-up, rollback-safe `elm ids assign` migration;
-4. preserve numeric compatibility while enforcing archive/project/namespace
-   policy across every content-bearing read path;
-5. serialize writers with a cross-platform lock and atomic canonical writes;
-6. validate migrations, rollback, direct-ID policy, killed-writer recovery, and
-   Windows/Linux CI before beginning Phase 2.
-
-This slice makes later provenance references safe without introducing claims or
-model-dependent behavior.
+Do not implement claims, proposals, evidence snapshots, temporal history, MCP,
+embeddings, or model summarization in this slice.
 
 ## 22. Supersession rule
 
