@@ -1,6 +1,6 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: active staged architecture; Phases 1 and 2 implementation verified
+Status: active staged architecture; Phases 1 and 2 verified, Phase 3 in release validation
 
 Date: 2026-08-26
 
@@ -43,12 +43,15 @@ The first public release is not the full claims/evidence/MCP platform. It is a c
 - The disposable index has an explicit schema version and an in-place migration from the unversioned Phase 0 schema.
 - The package has unit, integration, migration, concurrency, policy, and CLI-contract tests plus a sanitized benchmark.
 - The repository is a sanitized private GitHub pre-release and contains no personal ELM snapshot or private bootstrap artifact.
-- Phase 2 is explicitly authorized. Its ratified scope is bounded deterministic context packets, privacy-minimized disposable retrieval traces, retention cleanup, and comparative evaluation.
-- Claims, proposals, evidence snapshots, temporal history, MCP, embeddings, and model summarization remain deferred.
+- Phase 2 is complete: bounded deterministic context packets, privacy-minimized disposable retrieval traces, retention cleanup, and comparative evaluation are implemented.
+- Phase 3 is authorized and implemented on its release branch: immutable proposals, reference-only evidence metadata, canonical claim Markdown, explicit lifecycle transitions, valid/recorded-time history, contradictions, tombstones, and recoverable transactions.
+- Raw evidence snapshots, MCP, embeddings, and model summarization remain deferred.
 
 ### Provisional design
 
-Everything below is a proposed implementation contract. It becomes project canon only after review or implementation validation.
+The exact implemented Phase 1–3 contracts are repository truth and are linked
+from their phase documents. Later roadmap phases remain proposed until explicit
+authorization and implementation validation.
 
 ## 3. Architectural problems repaired
 
@@ -589,6 +592,11 @@ Acceptance:
 
 Goal: add governed state changes after identity and evaluation exist.
 
+Status: implementation complete; cross-platform release validation pending.
+
+The frozen implemented contract is documented in
+[PHASE_3_GOVERNED_MEMORY.md](PHASE_3_GOVERNED_MEMORY.md).
+
 Implementation slices:
 
 1. Add atomic one-file-per-proposal queue.
@@ -711,7 +719,9 @@ The first share-worthy demonstration should be small and reproducible:
 8. ELM records a new proposal and supersedes the old claim after ratification.
 9. A current query returns the new state; a historical query returns the old state with provenance.
 
-Before Phase 3 exists, the public baseline demo should use already-ratified Markdown and demonstrate only cross-agent retrieval and bounded context. It must not fake claim lifecycle features that are not implemented.
+The sanitized Phase 3 lifecycle smoke test now exercises this flow through the
+CLI. A later heterogeneous-host demonstration remains part of Phase 4 and must
+not imply that MCP or authenticated actors already exist.
 
 ## 19. Explicitly deferred
 
@@ -742,18 +752,17 @@ These do not block Phase 1 development. They do block the first public tag.
 
 ## 21. Immediate next implementation slice
 
-The active slice is **Phase 2 bounded context and evaluation traces**:
+The active slice is **Phase 3 release validation**:
 
-1. compile whole, source-linked sections under a requested deterministic budget;
-2. preserve authority and read-policy boundaries in every packet;
-3. record privacy-minimized disposable traces with raw task text disabled by default;
-4. provide preview/apply retention cleanup;
-5. compare no-memory, full-file, search/read, and context-pack baselines across
-   at least 50 carefully sanitized cases;
-6. verify the package and skill on Windows/Linux CI and on a private-corpus copy.
+1. validate the canonical claim lifecycle and recovery contract on Windows and Linux;
+2. run the synthetic lifecycle demo and existing 50-case retrieval benchmark;
+3. prove delete-and-rebuild identity and current/history equivalence;
+4. validate the package and operator skill in isolated installations;
+5. verify schema migration and backward compatibility on a private-corpus copy;
+6. publish readiness evidence without adding private memory data.
 
-Do not implement claims, proposals, evidence snapshots, temporal history, MCP,
-embeddings, or model summarization in this slice.
+Do not implement raw evidence snapshots, MCP, embeddings, authenticated
+multi-user scopes, or model summarization in this slice.
 
 ## 22. Supersession rule
 

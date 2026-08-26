@@ -94,6 +94,35 @@ class DocumentIdAssignmentTests(unittest.TestCase):
         self.assertEqual(1, len(manifests))
         self.assertEqual("rolled_back", manifest_status)
 
+    def test_claim_ids_are_preserved_and_skipped_by_document_uid_assignment(self) -> None:
+        with FixtureCopy() as root:
+            proposal = run_cli(
+                root,
+                "propose",
+                "--project", "orion",
+                "--subject", "backend",
+                "--predicate", "uses_database",
+                "--object", "ClaimIdDB",
+                "--actor", "agent:test",
+                "--source-ref", "repo://config@sha256:" + "a" * 64,
+            )
+            accepted = run_cli(
+                root,
+                "accept", proposal["proposal_id"],
+                "--actor", "human:test",
+                "--authority", "user_ratified",
+            )
+            claim = root / "20_projects" / "orion" / "CLAIMS" / f"{accepted['claim_id']}.md"
+            before = claim.read_bytes()
+            dry_run = run_cli(root, "ids", "assign", "--dry-run")
+            applied = run_cli(root, "ids", "assign", "--apply")
+            after = claim.read_bytes()
+
+        self.assertGreater(dry_run["planned"], 0)
+        self.assertGreater(applied["changed"], 0)
+        self.assertEqual(before, after)
+        self.assertIn(f"ELM ID: {accepted['claim_id']}".encode(), after)
+
 
 if __name__ == "__main__":
     unittest.main()

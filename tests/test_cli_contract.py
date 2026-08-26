@@ -46,7 +46,7 @@ class RootResolutionTests(unittest.TestCase):
 
 
 class PublicCliContractTests(unittest.TestCase):
-    def test_module_help_lists_v0_commands(self) -> None:
+    def test_module_help_lists_public_commands(self) -> None:
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(SOURCE_ROOT)
         environment["PYTHONIOENCODING"] = "utf-8"
@@ -71,12 +71,23 @@ class PublicCliContractTests(unittest.TestCase):
             "stats",
             "doctor",
             "traces",
+            "evidence",
+            "propose",
+            "proposals",
+            "accept",
+            "reject",
+            "defer",
+            "dispute",
+            "supersede",
+            "delete",
+            "history",
+            "recover",
         ):
             self.assertIn(command, completed.stdout)
         self.assertIn("ids", completed.stdout)
 
     def test_package_exposes_pre_release_version(self) -> None:
-        self.assertEqual("0.3.0.dev1", elm_memory.__version__)
+        self.assertEqual("0.4.0.dev0", elm_memory.__version__)
 
     def test_json_output_is_utf8_under_a_legacy_process_encoding(self) -> None:
         with tempfile.TemporaryDirectory(prefix="elm-unicode-") as temporary:

@@ -11,7 +11,7 @@ from .identity import (
 )
 
 
-INDEX_SCHEMA_VERSION = 1
+INDEX_SCHEMA_VERSION = 2
 
 
 class UnsupportedSchemaError(RuntimeError):
@@ -138,6 +138,101 @@ def _create_latest(con: sqlite3.Connection) -> None:
             summary,
             tokenize='unicode61 remove_diacritics 2'
         );
+
+        CREATE TABLE governance_proposals (
+            proposal_id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            project TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            predicate TEXT NOT NULL,
+            object TEXT NOT NULL,
+            status TEXT NOT NULL,
+            proposed_at TEXT NOT NULL,
+            valid_from TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            requested_authority TEXT NOT NULL,
+            sensitivity TEXT NOT NULL,
+            evidence_ids_json TEXT NOT NULL,
+            source_refs_json TEXT NOT NULL,
+            content_hash TEXT NOT NULL
+        );
+        CREATE INDEX idx_governance_proposals_project_status
+            ON governance_proposals(project,status);
+
+        CREATE TABLE governance_evidence (
+            evidence_id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            project TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            source_uri TEXT NOT NULL,
+            captured_at TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            excerpt_sha256 TEXT,
+            sensitivity TEXT NOT NULL,
+            retention TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            record_hash TEXT NOT NULL
+        );
+        CREATE INDEX idx_governance_evidence_project
+            ON governance_evidence(project);
+
+        CREATE TABLE claims (
+            claim_id TEXT PRIMARY KEY,
+            document_id INTEGER NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
+            path TEXT NOT NULL UNIQUE,
+            project TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            predicate TEXT NOT NULL,
+            object TEXT NOT NULL,
+            status TEXT NOT NULL,
+            authority TEXT NOT NULL,
+            valid_from TEXT NOT NULL,
+            valid_to TEXT,
+            recorded_at TEXT NOT NULL,
+            transitioned_at TEXT NOT NULL,
+            proposal_id TEXT NOT NULL,
+            supersedes TEXT,
+            superseded_by TEXT,
+            evidence_ids_json TEXT NOT NULL,
+            source_refs_json TEXT NOT NULL,
+            sensitivity TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            content_hash TEXT NOT NULL
+        );
+        CREATE INDEX idx_claims_current
+            ON claims(project,status,subject,predicate,valid_from,valid_to);
+
+        CREATE TABLE governance_events (
+            event_id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            action TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            transaction_id TEXT NOT NULL,
+            project TEXT NOT NULL,
+            proposal_id TEXT,
+            claim_id TEXT,
+            previous_claim_id TEXT,
+            target_id TEXT,
+            authority TEXT,
+            reason_code TEXT,
+            previous_sha256 TEXT,
+            current_sha256 TEXT
+        );
+        CREATE INDEX idx_governance_events_project_time
+            ON governance_events(project,occurred_at);
+
+        CREATE TABLE governance_tombstones (
+            item_id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            tombstone_id TEXT NOT NULL UNIQUE,
+            item_type TEXT NOT NULL,
+            project TEXT,
+            deleted_at TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            reason_code TEXT NOT NULL,
+            prior_sha256 TEXT NOT NULL
+        );
         """
     )
     con.execute(
@@ -209,6 +304,55 @@ def _migrate_zero_to_one(con: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_one_to_two(con: sqlite3.Connection) -> None:
+    script = """
+        CREATE TABLE governance_proposals (
+            proposal_id TEXT PRIMARY KEY,path TEXT NOT NULL UNIQUE,project TEXT NOT NULL,
+            subject TEXT NOT NULL,predicate TEXT NOT NULL,object TEXT NOT NULL,status TEXT NOT NULL,
+            proposed_at TEXT NOT NULL,valid_from TEXT NOT NULL,actor TEXT NOT NULL,
+            requested_authority TEXT NOT NULL,sensitivity TEXT NOT NULL,
+            evidence_ids_json TEXT NOT NULL,source_refs_json TEXT NOT NULL,content_hash TEXT NOT NULL
+        );
+        CREATE INDEX idx_governance_proposals_project_status
+            ON governance_proposals(project,status);
+        CREATE TABLE governance_evidence (
+            evidence_id TEXT PRIMARY KEY,path TEXT NOT NULL UNIQUE,project TEXT NOT NULL,
+            kind TEXT NOT NULL,source_uri TEXT NOT NULL,captured_at TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,excerpt_sha256 TEXT,sensitivity TEXT NOT NULL,
+            retention TEXT NOT NULL,actor TEXT NOT NULL,record_hash TEXT NOT NULL
+        );
+        CREATE INDEX idx_governance_evidence_project ON governance_evidence(project);
+        CREATE TABLE claims (
+            claim_id TEXT PRIMARY KEY,document_id INTEGER NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
+            path TEXT NOT NULL UNIQUE,project TEXT NOT NULL,subject TEXT NOT NULL,predicate TEXT NOT NULL,
+            object TEXT NOT NULL,status TEXT NOT NULL,authority TEXT NOT NULL,valid_from TEXT NOT NULL,
+            valid_to TEXT,recorded_at TEXT NOT NULL,transitioned_at TEXT NOT NULL,proposal_id TEXT NOT NULL,
+            supersedes TEXT,superseded_by TEXT,evidence_ids_json TEXT NOT NULL,source_refs_json TEXT NOT NULL,
+            sensitivity TEXT NOT NULL,actor TEXT NOT NULL,content_hash TEXT NOT NULL
+        );
+        CREATE INDEX idx_claims_current
+            ON claims(project,status,subject,predicate,valid_from,valid_to);
+        CREATE TABLE governance_events (
+            event_id TEXT PRIMARY KEY,path TEXT NOT NULL UNIQUE,action TEXT NOT NULL,occurred_at TEXT NOT NULL,
+            actor TEXT NOT NULL,transaction_id TEXT NOT NULL,project TEXT NOT NULL,proposal_id TEXT,
+            claim_id TEXT,previous_claim_id TEXT,target_id TEXT,authority TEXT,reason_code TEXT,
+            previous_sha256 TEXT,current_sha256 TEXT
+        );
+        CREATE INDEX idx_governance_events_project_time ON governance_events(project,occurred_at);
+        CREATE TABLE governance_tombstones (
+            item_id TEXT PRIMARY KEY,path TEXT NOT NULL UNIQUE,tombstone_id TEXT NOT NULL UNIQUE,
+            item_type TEXT NOT NULL,project TEXT,deleted_at TEXT NOT NULL,actor TEXT NOT NULL,
+            reason_code TEXT NOT NULL,prior_sha256 TEXT NOT NULL
+        );
+        """
+    for statement in script.split(";"):
+        if statement.strip():
+            con.execute(statement)
+    con.execute(
+        "INSERT OR REPLACE INTO elm_meta(key,value) VALUES('index_schema_version','2')"
+    )
+
+
 def ensure_schema(con: sqlite3.Connection) -> None:
     version = schema_version(con)
     if version is None:
@@ -227,6 +371,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             if version == 0:
                 _migrate_zero_to_one(con)
                 version = 1
+            elif version == 1:
+                _migrate_one_to_two(con)
+                version = 2
             else:
                 raise SchemaMigrationError(f"No migration path from index schema {version}.")
         con.commit()

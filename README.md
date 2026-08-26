@@ -2,10 +2,11 @@
 
 ELM is a local, inspectable project-memory and deterministic retrieval layer for coding agents. Canonical knowledge stays in Markdown; SQLite FTS5 is a disposable index that can be deleted and rebuilt.
 
-This repository is in **Phase 2 / pre-alpha**. In addition to the deterministic
-retrieval and stable-identity foundations, it compiles bounded source-linked
-context packets and records optional privacy-minimized local traces. Governed
-claims, evidence snapshots, and MCP remain deferred.
+This repository is in **Phase 3 / pre-alpha**. In addition to deterministic
+retrieval, stable identity, and bounded context packets, it now implements a
+governed proposal-to-claim lifecycle with reference-only evidence metadata,
+valid/recorded-time history, contradiction reporting, and recoverable canonical
+transactions. Raw evidence snapshots and MCP remain deferred.
 
 ## Why ELM
 
@@ -103,6 +104,8 @@ Available commands:
 
 ```text
 sync  rebuild  search  context  outline  read  related  stats  doctor
+evidence add  propose  proposals list  accept  reject  defer  dispute
+supersede  delete  history  recover
 ids assign  traces cleanup
 ```
 
@@ -177,6 +180,45 @@ elm traces cleanup --root /path/to/memory --apply --json
 The exact Phase 2 contract is documented in
 [docs/PHASE_2_BOUNDED_CONTEXT.md](docs/PHASE_2_BOUNDED_CONTEXT.md).
 
+## Governed memory lifecycle
+
+Phase 3 separates candidate generation from ratification. Proposals and evidence
+references are immutable JSON records; accepted claims are canonical Markdown;
+lifecycle events and metadata-only tombstones preserve provenance. SQLite only
+projects this state and can be deleted and rebuilt.
+
+A minimal reference-only workflow is:
+
+```bash
+elm evidence add --root /path/to/memory --actor agent:researcher \
+  --project orion --kind repository_file --source-uri repo://src/config.py \
+  --content-sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+elm propose --root /path/to/memory --actor agent:researcher \
+  --project orion --subject backend --predicate uses_database --object NovaDB \
+  --requested-authority agent_proposal \
+  --source-ref repo://src/config.py@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+# Only after explicit ratification:
+elm accept PROPOSAL_ID --root /path/to/memory \
+  --actor human:reviewer --authority user_ratified
+```
+
+The agent that creates a proposal does not gain authority to accept it. Use a
+new proposal plus `elm supersede OLD_CLAIM_ID NEW_PROPOSAL_ID` to change an
+accepted fact. Ordinary reads hide disputed, superseded, future-effective,
+expired, and deleted claims; `--include-history` or `elm history` is an explicit
+historical view.
+
+Multi-file transitions use a canonical journal outside `.elm`. Diagnose an
+interrupted transaction with `doctor`, preview with `elm recover --dry-run`, and
+apply only after reviewing the affected paths with `elm recover --apply`.
+Recovery refuses to overwrite files changed unexpectedly after the interruption.
+
+The exact canonical format, state machine, temporal semantics, and recovery
+contract are documented in
+[docs/PHASE_3_GOVERNED_MEMORY.md](docs/PHASE_3_GOVERNED_MEMORY.md).
+
 ## Agent Skill
 
 A host-neutral Agent Skill is available at `skills/elm-memory-operator`. It teaches compatible coding agents when to retrieve ELM context and how to preserve authority boundaries. The CLI remains usable without skill support.
@@ -193,14 +235,19 @@ python /path/to/skill-creator/scripts/quick_validate.py skills/elm-memory-operat
 python -m compileall -q src tests benchmarks
 python -m unittest discover -s tests -v
 python benchmarks/run_benchmark.py --assert-pass
+python benchmarks/run_governance_demo.py --assert-pass
 ```
 
-The sanitized benchmark contains 50 deterministic retrieval, context-packing,
+The sanitized retrieval benchmark contains 50 deterministic retrieval, context-packing,
 project-filter, and archive-isolation cases. It compares no-memory, full-file,
 search/read, and context-pack estimated-token baselines. Retrieval quality and
 budget compliance are reported separately from task outcome, which the suite
 does not measure. It is not a claim of general semantic-memory quality or
 billed-token savings.
+
+`python benchmarks/run_governance_demo.py --assert-pass` adds an end-to-end,
+fully synthetic Phase 3 smoke test: propose, ratify, supersede, current/history
+separation, rebuild, doctor, and SQLite integrity.
 
 ## Architecture boundary
 
@@ -213,8 +260,8 @@ Phase order:
 
 1. public baseline and regression protection;
 2. stable identity, migrations, and concurrency;
-3. bounded context packets and privacy-safe traces (current phase);
-4. governed proposals, evidence references, claims, and temporal history;
+3. bounded context packets and privacy-safe traces;
+4. governed proposals, evidence references, claims, and temporal history (current phase);
 5. read-only MCP, followed later by controlled mutation;
 6. optional semantic retrieval only after measured deterministic failures.
 
@@ -227,14 +274,17 @@ modification, redistribution, and commercial use under its notice and license
 conditions, and includes an explicit contributor patent grant.
 
 The GitHub repository remains a private pre-release while the external-facing
-release decisions and documentation are completed. Phase 2 validation evidence
-is recorded in [docs/PHASE_2_READINESS.md](docs/PHASE_2_READINESS.md).
+release decisions and documentation are completed. Phase 3 validation evidence
+is recorded in [docs/PHASE_3_READINESS.md](docs/PHASE_3_READINESS.md).
 
 ## Current limitations
 
 - document UIDs are optional; without one, a section key is path-bound and changes when its document moves;
 - namespace and archive filters are governance controls, not authentication between mutually untrusted OS users;
+- actor and sensitivity labels are provenance/governance metadata, not authenticated authorization or encryption;
 - canonical mutations are intentionally serialized through one writer rather than supporting simultaneous writers;
 - deterministic token accounting is a model-neutral character estimate, not a vendor tokenizer or billed-token measurement;
-- Phase 2 performs no LLM summarization and cannot recover synonyms absent from the lexical corpus;
-- there is no claims lifecycle, evidence store, temporal history, or MCP server yet.
+- ELM performs no LLM summarization and cannot recover synonyms absent from the lexical corpus;
+- evidence records contain locators and hashes only; ELM does not retain or verify source payload availability;
+- deletion removes active canonical/derived ELM state but cannot erase Git history, filesystem snapshots, or external backups;
+- there is no raw evidence store, authenticated multi-user service, or MCP server yet.

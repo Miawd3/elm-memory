@@ -71,6 +71,11 @@ the user explicitly wants raw queries retained for evaluation.
 
 Ordinary retrieval excludes `backups` and `99_archive`. Include archives only when the user asks for history or a superseded decision is necessary.
 
+Ordinary retrieval also excludes disputed, superseded, future-effective, expired,
+and deleted governed claims. Use `--include-history` or `elm history` only when
+the task genuinely needs prior state; do not broaden a current-state query just
+to obtain more matches.
+
 When the task is already project-scoped, pass the same `--project` or
 `--namespace` policy to search, outline, read, and related. Do not retry a denied
 direct ID with broader policy unless the user actually needs that wider scope.
@@ -99,6 +104,36 @@ trace deletion is actually requested or required by the configured retention
 policy.
 
 When multiple agents deliberate, they may propose memory candidates, but exactly one writer finalizes accepted durable memory after ratification.
+
+## Govern durable claims explicitly
+
+An agent may create an immutable proposal and reference-only evidence metadata,
+but it must not call `accept` or `supersede` merely because its own inference
+looks plausible. Acceptance requires explicit user/human ratification or a
+separately verified repository-state operation, expressed with one of the CLI's
+accepted authority values.
+
+Use the governed lifecycle when a fact needs durable identity, provenance, or
+valid-time history:
+
+1. Record only the source locator and hashes with `elm evidence add`; ELM does
+   not import raw evidence payloads.
+2. Create a candidate with `elm propose` and report its proposal ID.
+3. After explicit ratification, use `elm accept`; when replacing an accepted
+   claim, create a new proposal and use `elm supersede`.
+4. Use `reject`, `defer`, or `dispute` rather than editing lifecycle metadata by
+   hand. Use `elm delete` only when deletion is requested; it removes the active
+   canonical item and keeps a metadata-only tombstone.
+5. Run `elm sync --json` and `elm doctor --json --no-sync` after a mutation that
+   matters to the current task.
+
+`actor` values are provenance labels, not authenticated identities. Do not
+describe namespaces, sensitivity labels, or actor strings as access control.
+
+If `doctor` reports an incomplete governance transaction, preview recovery with
+`elm recover --dry-run --json`. Apply it only after confirming the affected
+paths with `elm recover --apply --json`; recovery refuses to overwrite an
+unexpected human edit.
 
 ## Explicit identity migration
 
