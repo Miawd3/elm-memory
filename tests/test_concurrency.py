@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from _bootstrap import FixtureCopy, SOURCE_ROOT, run_cli, run_cli_process
-from elm_memory.atomic import atomic_write_bytes
+from elm_memory.atomic import atomic_create_bytes, atomic_write_bytes
 from elm_memory.locking import WriterLock, WriterLockError
 
 
@@ -70,6 +70,18 @@ class ConcurrencyTests(unittest.TestCase):
                     atomic_write_bytes(target, b"replacement\n")
             temporary_files = list(root.glob(".atomic.md.*.tmp"))
             content = target.read_bytes()
+
+        self.assertEqual(b"original\n", content)
+        self.assertEqual([], temporary_files)
+
+    def test_atomic_create_never_replaces_an_existing_immutable_record(self) -> None:
+        with FixtureCopy() as root:
+            target = root / "immutable.json"
+            target.write_bytes(b"original\n")
+            with self.assertRaises(FileExistsError):
+                atomic_create_bytes(target, b"replacement\n")
+            content = target.read_bytes()
+            temporary_files = list(root.glob(".immutable.json.*.tmp"))
 
         self.assertEqual(b"original\n", content)
         self.assertEqual([], temporary_files)

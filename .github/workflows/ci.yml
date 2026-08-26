@@ -66,3 +66,6 @@ jobs:
 
       - name: Run sanitized benchmark
         run: python benchmarks/run_benchmark.py --assert-pass
+
+      - name: Run governed-memory lifecycle demo
+        run: python benchmarks/run_governance_demo.py --assert-pass

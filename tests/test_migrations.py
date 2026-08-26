@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 import uuid
 
 from _bootstrap import SOURCE_ROOT  # noqa: F401
@@ -160,6 +161,69 @@ class IndexMigrationTests(unittest.TestCase):
                 ).fetchone()[0]
 
         self.assertEqual("99", value)
+
+    def test_v1_projection_migrates_to_governance_schema(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="elm-v1-migrate-") as temporary:
+            root = Path(temporary)
+            with closing(connect(root)):
+                pass
+            with closing(sqlite3.connect(db_path(root))) as con:
+                for table in (
+                    "governance_tombstones",
+                    "governance_events",
+                    "claims",
+                    "governance_evidence",
+                    "governance_proposals",
+                ):
+                    con.execute(f"DROP TABLE {table}")
+                con.execute(
+                    "UPDATE elm_meta SET value='1' WHERE key='index_schema_version'"
+                )
+                con.commit()
+            with closing(connect(root)) as con:
+                version = schema_version(con)
+                tables = {
+                    row[0] for row in con.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+
+        self.assertEqual(2, version)
+        self.assertIn("claims", tables)
+        self.assertIn("governance_events", tables)
+
+    def test_v1_migration_failure_rolls_back_partial_ddl(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="elm-v1-rollback-") as temporary:
+            root = Path(temporary)
+            with closing(connect(root)):
+                pass
+            with closing(sqlite3.connect(db_path(root))) as con:
+                for table in (
+                    "governance_tombstones",
+                    "governance_events",
+                    "claims",
+                    "governance_evidence",
+                    "governance_proposals",
+                ):
+                    con.execute(f"DROP TABLE {table}")
+                con.execute("UPDATE elm_meta SET value='1' WHERE key='index_schema_version'")
+                con.commit()
+
+            def fail_after_ddl(connection: sqlite3.Connection) -> None:
+                connection.execute("CREATE TABLE partial_governance(id INTEGER)")
+                raise RuntimeError("injected migration failure")
+
+            with patch("elm_memory.schema._migrate_one_to_two", side_effect=fail_after_ddl):
+                with self.assertRaises(SchemaMigrationError):
+                    connect(root)
+            with closing(sqlite3.connect(db_path(root))) as con:
+                version = schema_version(con)
+                partial = con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='partial_governance'"
+                ).fetchone()
+
+        self.assertEqual(1, version)
+        self.assertIsNone(partial)
 
 
 if __name__ == "__main__":

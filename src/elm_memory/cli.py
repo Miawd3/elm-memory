@@ -34,6 +34,26 @@ from .identity import (
     normalize_heading_path,
     validate_document_uid,
 )
+from .governance import (
+    ACCEPTED_AUTHORITIES,
+    EVIDENCE_KINDS,
+    PROPOSAL_AUTHORITIES,
+    REASON_CODES,
+    SENSITIVITIES,
+    GovernanceError,
+    accept_proposal,
+    create_evidence_reference,
+    create_proposal,
+    delete_item,
+    dispute_claim,
+    history_view,
+    pending_transactions,
+    recover_governance_transactions,
+    reject_or_defer_proposal,
+    supersede_claim,
+    sync_governance_projection,
+    validate_id,
+)
 from .locking import WriterLock, WriterLockError
 from .schema import (
     INDEX_SCHEMA_VERSION,
@@ -54,6 +74,23 @@ META_KEYS = {
     "status": "status",
     "summary": "summary",
     "elm id": "elm_id",
+    "record type": "record_type",
+    "project": "governance_project",
+    "subject": "claim_subject",
+    "predicate": "claim_predicate",
+    "object": "claim_object",
+    "authority": "claim_authority",
+    "valid from": "valid_from",
+    "valid to": "valid_to",
+    "recorded at": "recorded_at",
+    "transitioned at": "transitioned_at",
+    "proposal id": "proposal_id",
+    "supersedes": "supersedes",
+    "superseded by": "superseded_by",
+    "evidence ids": "evidence_ids",
+    "source refs": "source_refs",
+    "sensitivity": "sensitivity",
+    "actor": "actor",
 }
 EXPECTED_META = ("Title", "Scope", "Tags", "Last updated", "Status")
 ARCHIVE_PARTS = {"backups", "99_archive"}
@@ -80,7 +117,7 @@ def configure_standard_streams() -> None:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def resolve_root(cli_root: str | None) -> Path:
@@ -295,7 +332,12 @@ def index_one(con: sqlite3.Connection, root: Path, path: Path, force: bool = Fal
     text = raw.decode("utf-8-sig", errors="replace")
     lines = text.splitlines(keepends=True)
     meta, metadata_end = parse_metadata(lines)
-    source_document_uid = validate_document_uid(meta.get("elm_id"))
+    raw_elm_id = meta.get("elm_id")
+    if raw_elm_id and raw_elm_id.lower().startswith("claim_"):
+        validate_id(raw_elm_id, "claim")
+        source_document_uid = None
+    else:
+        source_document_uid = validate_document_uid(raw_elm_id)
     archive = 1 if is_archive_path(relative) else 0
     # An archive may be an exact byte-for-byte copy of its active document.
     # Projecting the same durable UID twice would collide in both documents and
@@ -429,6 +471,11 @@ def _sync_unlocked(con: sqlite3.Connection, root: Path, force: bool = False) -> 
             errors.append({"path": relpath(root, path), "error": str(exc)})
     with con:
         resolve_link_targets(con)
+    try:
+        governance = sync_governance_projection(con, root)
+    except Exception as exc:
+        governance = None
+        errors.append({"path": "[governance]", "error": str(exc)})
     return {
         "root": str(root),
         "database": str(db_path(root)),
@@ -437,6 +484,7 @@ def _sync_unlocked(con: sqlite3.Connection, root: Path, force: bool = False) -> 
         "unchanged": unchanged,
         "removed": len(removed),
         "errors": errors,
+        "governance": governance,
     }
 
 
@@ -485,6 +533,30 @@ def _sync_from_args(args, con: sqlite3.Connection, root: Path, *, force: bool = 
     )
 
 
+def _require_stable_governance(root: Path) -> None:
+    pending = pending_transactions(root)
+    if pending:
+        raise GovernanceError(
+            "Governed reads are unavailable while a canonical transaction is incomplete; "
+            "run elm recover --dry-run and recover it explicitly."
+        )
+
+
+def _prepare_governed_read(args, con: sqlite3.Connection, root: Path) -> None:
+    _require_stable_governance(root)
+    if getattr(args, "no_sync", False):
+        return
+    result = _sync_from_args(args, con, root)
+    governance_errors = [
+        item for item in result["errors"] if item.get("path") == "[governance]"
+    ]
+    if governance_errors:
+        raise GovernanceError(
+            "Governed projection could not be refreshed; the read was refused instead of "
+            f"using ambiguous claim state: {governance_errors[0]['error']}"
+        )
+
+
 def _policy_sql(alias: str, args) -> tuple[list[str], list[object]]:
     conditions: list[str] = []
     params: list[object] = []
@@ -496,6 +568,14 @@ def _policy_sql(alias: str, args) -> tuple[list[str], list[object]]:
     if args.namespace:
         conditions.append(f"{alias}.namespace=?")
         params.append(args.namespace)
+    if not getattr(args, "include_history", False):
+        moment = now_iso()
+        conditions.append(
+            f"NOT EXISTS (SELECT 1 FROM claims policy_claim WHERE policy_claim.document_id={alias}.id "
+            "AND (policy_claim.status<>'accepted' OR policy_claim.valid_from>? "
+            "OR (policy_claim.valid_to IS NOT NULL AND policy_claim.valid_to<=?)))"
+        )
+        params.extend((moment, moment))
     return conditions, params
 
 
@@ -508,6 +588,15 @@ def _path_allowed(path: str, args) -> bool:
     if args.namespace and derive_namespace(area, project) != args.namespace:
         return False
     return True
+
+
+def _document_allowed(con: sqlite3.Connection, document_id: int, args) -> bool:
+    conditions, params = _policy_sql("d", args)
+    where = " AND ".join(["d.id=?"] + conditions)
+    return con.execute(
+        f"SELECT 1 FROM documents d WHERE {where}",
+        [document_id] + params,
+    ).fetchone() is not None
 
 
 def search_sections(
@@ -541,12 +630,24 @@ def search_sections(
         SELECT d.id AS document_id,d.document_uid,s.id AS section_id,s.section_key,s.section_namespace,
                d.path,d.title,d.namespace,d.project,d.status,d.last_updated,d.is_archive,
                s.heading,s.heading_path,s.start_line,s.end_line,
+               c.claim_id,c.subject AS claim_subject,c.predicate AS claim_predicate,
+               c.object AS claim_object,c.authority AS claim_authority,c.valid_from,c.valid_to,
+               CASE WHEN c.claim_id IS NOT NULL AND EXISTS(
+                   SELECT 1 FROM claims other
+                   WHERE other.claim_id<>c.claim_id AND other.project=c.project
+                     AND other.status='accepted' AND c.status='accepted'
+                     AND other.subject=c.subject AND other.predicate=c.predicate
+                     AND other.object<>c.object
+                     AND c.valid_from<coalesce(other.valid_to,'9999-12-31T23:59:59.999999+00:00')
+                     AND other.valid_from<coalesce(c.valid_to,'9999-12-31T23:59:59.999999+00:00')
+               ) THEN 1 ELSE 0 END AS contradiction,
                s.token_estimate,s.text,
                -bm25(sections_fts, 0.0,0.0,3.0,2.0,1.0,1.5,1.0,1.0) AS score,
                snippet(sections_fts, 4, '[', ']', ' ... ', 28) AS snippet
         FROM sections_fts
         JOIN sections s ON s.id=CAST(sections_fts.section_id AS INTEGER)
         JOIN documents d ON d.id=s.document_id
+        LEFT JOIN claims c ON c.document_id=d.id
         WHERE {' AND '.join(conditions)}
         ORDER BY score DESC, d.last_updated DESC
         LIMIT ?
@@ -557,14 +658,14 @@ def search_sections(
     for r in rows:
         item = dict(r)
         item["is_archive"] = bool(item["is_archive"])
+        item["contradiction"] = bool(item["contradiction"])
         item["tags"] = fetch_tags(con, int(item["document_id"]))
         results.append(item)
     return results
 
 
 def command_search(args, con: sqlite3.Connection, root: Path):
-    if not args.no_sync:
-        _sync_from_args(args, con, root)
+    _prepare_governed_read(args, con, root)
     results = search_sections(con, args.query, args)
     public_results = []
     for result in results:
@@ -639,8 +740,7 @@ def command_context(args, con: sqlite3.Connection, root: Path):
         raise ValueError("Context candidate limit must be at least 1.")
     if args.trace_retention_days < 0:
         raise ValueError("Trace retention days cannot be negative.")
-    if not args.no_sync:
-        _sync_from_args(args, con, root)
+    _prepare_governed_read(args, con, root)
 
     results = search_sections(con, args.task, args, limit=args.limit, broad=False)
     fallback_used = False
@@ -755,6 +855,10 @@ def resolve_document(con: sqlite3.Connection, ref: str, args) -> sqlite3.Row:
     elif ref.lower().startswith("doc_"):
         reference_conditions = ["d.document_uid=?"]
         reference_params = [ref.lower()]
+    elif ref.lower().startswith("claim_"):
+        claim_id = validate_id(ref, "claim")
+        reference_conditions = ["d.id=(SELECT document_id FROM claims WHERE claim_id=?)"]
+        reference_params = [claim_id]
     else:
         reference_conditions = ["d.path=?"]
         reference_params = [ref.replace("\\", "/")]
@@ -791,8 +895,7 @@ def resolve_section(con: sqlite3.Connection, ref: str, args) -> sqlite3.Row:
 
 
 def command_outline(args, con: sqlite3.Connection, root: Path):
-    if not args.no_sync:
-        _sync_from_args(args, con, root)
+    _prepare_governed_read(args, con, root)
     doc = resolve_document(con, args.document, args)
     rows = con.execute(
         """SELECT id,parent_id,section_key,section_namespace,heading,heading_path,level,
@@ -804,12 +907,12 @@ def command_outline(args, con: sqlite3.Connection, root: Path):
 
 
 def command_read(args, con: sqlite3.Connection, root: Path):
+    _require_stable_governance(root)
     emit(dict(resolve_section(con, args.section, args)), args.json)
 
 
 def command_related(args, con: sqlite3.Connection, root: Path):
-    if not args.no_sync:
-        _sync_from_args(args, con, root)
+    _prepare_governed_read(args, con, root)
     doc = resolve_document(con, args.document, args)
     outgoing_rows = [dict(r) for r in con.execute(
         """SELECT l.relation_type,l.anchor_text,l.target_path,d.id AS target_id,
@@ -819,7 +922,16 @@ def command_related(args, con: sqlite3.Connection, root: Path):
            FROM links l LEFT JOIN documents d ON d.id=l.target_document_id
            WHERE l.source_document_id=? ORDER BY l.relation_type,l.target_path""", (doc["id"],)
     )]
-    outgoing = [row for row in outgoing_rows if _path_allowed(row["target_path"], args)]
+    outgoing = [
+        row for row in outgoing_rows
+        if _path_allowed(row["target_path"], args)
+        and not (
+            row["target_id"] is None
+            and not getattr(args, "include_history", False)
+            and re.search(r"(?:^|/)CLAIMS/claim_[0-9a-f-]+\.md$", row["target_path"], re.I)
+        )
+        and (row["target_id"] is None or _document_allowed(con, int(row["target_id"]), args))
+    ]
     incoming_conditions, incoming_params = _policy_sql("s", args)
     incoming = [dict(r) for r in con.execute(
         f"""SELECT l.relation_type,l.anchor_text,s.id AS source_id,s.document_uid AS source_uid,
@@ -835,8 +947,7 @@ def command_related(args, con: sqlite3.Connection, root: Path):
 
 
 def command_stats(args, con: sqlite3.Connection, root: Path):
-    if not args.no_sync:
-        _sync_from_args(args, con, root)
+    _prepare_governed_read(args, con, root)
     row = con.execute(
         """SELECT COUNT(*) docs, SUM(CASE WHEN is_archive=0 THEN 1 ELSE 0 END) active_docs,
                   SUM(CASE WHEN is_archive=1 THEN 1 ELSE 0 END) archive_docs FROM documents"""
@@ -852,6 +963,16 @@ def command_stats(args, con: sqlite3.Connection, root: Path):
                WHERE l.target_document_id IS NULL AND d.is_archive=0"""
         ).fetchone()["c"],
         "index_schema_version": schema_version(con),
+        "proposals": con.execute("SELECT COUNT(*) c FROM governance_proposals").fetchone()["c"],
+        "evidence_refs": con.execute("SELECT COUNT(*) c FROM governance_evidence").fetchone()["c"],
+        "claims": con.execute("SELECT COUNT(*) c FROM claims").fetchone()["c"],
+        "current_claims": con.execute(
+            "SELECT COUNT(*) c FROM claims WHERE status='accepted' AND valid_from<=? "
+            "AND (valid_to IS NULL OR valid_to>?)",
+            (now_iso(), now_iso()),
+        ).fetchone()["c"],
+        "governance_events": con.execute("SELECT COUNT(*) c FROM governance_events").fetchone()["c"],
+        "tombstones": con.execute("SELECT COUNT(*) c FROM governance_tombstones").fetchone()["c"],
         "database": str(db_path(root)),
     })
     emit(out, args.json)
@@ -861,6 +982,8 @@ def command_doctor(args, con: sqlite3.Connection, root: Path):
     if not args.no_sync:
         _sync_from_args(args, con, root)
     issues: list[dict] = []
+    for transaction in pending_transactions(root):
+        issues.append({"kind": "incomplete_transaction", **transaction})
     active = con.execute("SELECT * FROM documents WHERE is_archive=0 ORDER BY path").fetchall()
     for d in active:
         props = {r["key"]: r["value"] for r in con.execute("SELECT key,value FROM properties WHERE document_id=?", (d["id"],))}
@@ -883,10 +1006,198 @@ def command_doctor(args, con: sqlite3.Connection, root: Path):
     for r in con.execute(
         """SELECT coalesce(project,area,'') scope_key,lower(title) k,title,COUNT(*) c,GROUP_CONCAT(path,' | ') paths
            FROM documents WHERE is_archive=0
+             AND NOT EXISTS (SELECT 1 FROM claims duplicate_claim WHERE duplicate_claim.document_id=documents.id)
            GROUP BY coalesce(project,area,''),lower(title) HAVING COUNT(*)>1 ORDER BY c DESC"""
     ):
         issues.append({"kind": "duplicate_title", "scope": r["scope_key"], "title": r["title"], "count": r["c"], "paths": r["paths"]})
+    tombstoned = {
+        row["item_id"] for row in con.execute("SELECT item_id FROM governance_tombstones")
+    }
+    evidence_ids = {
+        row["evidence_id"] for row in con.execute("SELECT evidence_id FROM governance_evidence")
+    }
+    proposal_ids = {
+        row["proposal_id"] for row in con.execute("SELECT proposal_id FROM governance_proposals")
+    }
+    claim_rows = [dict(row) for row in con.execute("SELECT * FROM claims ORDER BY claim_id")]
+    for claim in claim_rows:
+        if claim["proposal_id"] not in proposal_ids and claim["proposal_id"] not in tombstoned:
+            issues.append({"kind": "missing_claim_proposal", "claim_id": claim["claim_id"], "proposal_id": claim["proposal_id"]})
+        for evidence_id in json.loads(claim["evidence_ids_json"]):
+            if evidence_id not in evidence_ids and evidence_id not in tombstoned:
+                issues.append({"kind": "missing_claim_evidence", "claim_id": claim["claim_id"], "evidence_id": evidence_id})
+        if claim["status"] == "superseded" and (not claim["valid_to"] or not claim["superseded_by"]):
+            issues.append({"kind": "invalid_supersession", "claim_id": claim["claim_id"]})
+    for index, left in enumerate(claim_rows):
+        if left["status"] != "accepted":
+            continue
+        for right in claim_rows[index + 1:]:
+            if right["status"] != "accepted":
+                continue
+            if (left["project"], left["subject"], left["predicate"]) != (right["project"], right["subject"], right["predicate"]):
+                continue
+            left_end = left["valid_to"] or "9999-12-31T23:59:59.999999+00:00"
+            right_end = right["valid_to"] or "9999-12-31T23:59:59.999999+00:00"
+            if left["object"] != right["object"] and left["valid_from"] < right_end and right["valid_from"] < left_end:
+                issues.append({
+                    "kind": "claim_contradiction",
+                    "left_claim_id": left["claim_id"],
+                    "right_claim_id": right["claim_id"],
+                    "subject": left["subject"],
+                    "predicate": left["predicate"],
+                })
     emit({"issue_count": len(issues), "issues": issues[:args.limit], "truncated": len(issues) > args.limit}, args.json)
+
+
+def _sync_governance_result(args, con: sqlite3.Connection, root: Path, result: dict) -> None:
+    indexed = _sync_from_args(args, con, root)
+    if indexed["errors"]:
+        raise GovernanceError(f"Canonical mutation succeeded but derived sync reported errors: {indexed['errors']}")
+    result["sync"] = indexed
+    emit(result, args.json)
+
+
+def command_evidence_add(args, con: sqlite3.Connection, root: Path) -> None:
+    result = create_evidence_reference(
+        root,
+        project=args.project,
+        kind=args.kind,
+        source_uri=args.source_uri,
+        content_sha256=args.content_sha256,
+        excerpt_sha256=args.excerpt_sha256,
+        sensitivity=args.sensitivity,
+        actor=args.actor,
+        captured_at=args.captured_at,
+    )
+    _sync_governance_result(args, con, root, result)
+
+
+def command_propose(args, con: sqlite3.Connection, root: Path) -> None:
+    result = create_proposal(
+        root,
+        project=args.project,
+        subject=args.subject,
+        predicate=args.predicate,
+        object_value=args.object,
+        actor=args.actor,
+        requested_authority=args.requested_authority,
+        valid_from=args.valid_from,
+        sensitivity=args.sensitivity,
+        evidence_ids=args.evidence,
+        source_refs=args.source_ref,
+        rationale=args.rationale,
+    )
+    _sync_governance_result(args, con, root, result)
+
+
+def command_proposals_list(args, con: sqlite3.Connection, root: Path) -> None:
+    _prepare_governed_read(args, con, root)
+    conditions = []
+    params: list[object] = []
+    if args.project:
+        conditions.append("project=?")
+        params.append(args.project)
+    if args.status:
+        conditions.append("status=?")
+        params.append(args.status)
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    rows = [dict(row) for row in con.execute(
+        "SELECT proposal_id,path,project,subject,predicate,object,status,proposed_at,valid_from,"
+        "actor,requested_authority,sensitivity FROM governance_proposals"
+        + where + " ORDER BY proposed_at,proposal_id",
+        params,
+    )]
+    emit({"count": len(rows), "proposals": rows}, args.json)
+
+
+def command_accept(args, con: sqlite3.Connection, root: Path) -> None:
+    result = accept_proposal(
+        root,
+        proposal_id=args.proposal_id,
+        actor=args.actor,
+        authority=args.authority,
+        lock_timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    )
+    _sync_governance_result(args, con, root, result)
+
+
+def command_reject_or_defer(args, con: sqlite3.Connection, root: Path, action: str) -> None:
+    result = reject_or_defer_proposal(
+        root,
+        proposal_id=args.proposal_id,
+        actor=args.actor,
+        reason_code=args.reason_code,
+        action=action,
+        lock_timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    )
+    _sync_governance_result(args, con, root, result)
+
+
+def command_dispute(args, con: sqlite3.Connection, root: Path) -> None:
+    result = dispute_claim(
+        root,
+        claim_id=args.claim_id,
+        actor=args.actor,
+        reason_code=args.reason_code,
+        lock_timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    )
+    _sync_governance_result(args, con, root, result)
+
+
+def command_supersede(args, con: sqlite3.Connection, root: Path) -> None:
+    result = supersede_claim(
+        root,
+        claim_id=args.claim_id,
+        proposal_id=args.proposal_id,
+        actor=args.actor,
+        authority=args.authority,
+        lock_timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    )
+    _sync_governance_result(args, con, root, result)
+
+
+def command_delete(args, con: sqlite3.Connection, root: Path) -> None:
+    result = delete_item(
+        root,
+        item_id=args.item_id,
+        actor=args.actor,
+        reason_code=args.reason_code,
+        lock_timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    )
+    _sync_governance_result(args, con, root, result)
+
+
+def command_history(args, con: sqlite3.Connection, root: Path) -> None:
+    _prepare_governed_read(args, con, root)
+    emit(history_view(
+        root,
+        project=args.project,
+        subject=args.subject,
+        predicate=args.predicate,
+        valid_at=args.valid_at,
+        recorded_at=args.recorded_at,
+        include_deleted=args.include_deleted,
+    ), args.json)
+
+
+def command_recover(args, con: sqlite3.Connection, root: Path) -> None:
+    result = recover_governance_transactions(
+        root,
+        apply=args.apply,
+        lock_timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    )
+    if args.apply:
+        indexed = _sync_from_args(args, con, root)
+        if indexed["errors"]:
+            raise GovernanceError(f"Recovery completed but derived sync reported errors: {indexed['errors']}")
+        result["sync"] = indexed
+    emit(result, args.json)
 
 
 def _add_document_uid(raw: bytes, document_uid: str) -> bytes:
@@ -897,7 +1208,11 @@ def _add_document_uid(raw: bytes, document_uid: str) -> bytes:
         raise ValueError("Canonical Markdown must be valid UTF-8 before assigning an ELM ID.") from exc
     lines = text.splitlines(keepends=True)
     metadata, metadata_end = parse_metadata(lines)
-    existing = validate_document_uid(metadata.get("elm_id"))
+    raw_elm_id = metadata.get("elm_id")
+    if raw_elm_id and raw_elm_id.lower().startswith("claim_"):
+        validate_id(raw_elm_id, "claim")
+        return raw
+    existing = validate_document_uid(raw_elm_id)
     if existing:
         return raw
     insert_at = metadata_end
@@ -925,7 +1240,11 @@ def _plan_document_uids(root: Path, args) -> list[dict]:
         except UnicodeDecodeError as exc:
             raise ValueError(f"Cannot assign an ID to non-UTF-8 Markdown: {relative}") from exc
         metadata, _ = parse_metadata(text.splitlines(keepends=True))
-        existing = validate_document_uid(metadata.get("elm_id"))
+        raw_elm_id = metadata.get("elm_id")
+        if raw_elm_id and raw_elm_id.lower().startswith("claim_"):
+            validate_id(raw_elm_id, "claim")
+            continue
+        existing = validate_document_uid(raw_elm_id)
         if existing:
             previous = seen_uids.get(existing)
             if previous:
@@ -1120,6 +1439,16 @@ def add_read_policy(p) -> None:
     p.add_argument("--project")
     p.add_argument("--namespace", choices=("workspace", "shared", "project"))
     p.add_argument("--include-archive", action="store_true")
+    p.add_argument(
+        "--include-history",
+        action="store_true",
+        help="Explicitly allow disputed, superseded, future, or expired claim documents.",
+    )
+
+
+def add_governance_actor(p) -> None:
+    add_common(p)
+    p.add_argument("--actor", required=True, help="Non-authenticating provenance label for the explicit operator.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1182,6 +1511,82 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("doctor", help="Report metadata/link/duplicate issues without editing ELM.")
     add_common(p); p.add_argument("--limit", type=int, default=100); p.add_argument("--no-sync", action="store_true")
+
+    p = sub.add_parser("evidence", help="Manage reference-only governed evidence metadata.")
+    evidence_sub = p.add_subparsers(dest="evidence_command", required=True)
+    add = evidence_sub.add_parser("add", help="Create one immutable reference-only evidence record.")
+    add_governance_actor(add)
+    add.add_argument("--project", required=True)
+    add.add_argument("--kind", required=True, choices=tuple(sorted(EVIDENCE_KINDS)))
+    add.add_argument("--source-uri", required=True)
+    add.add_argument("--content-sha256", required=True)
+    add.add_argument("--excerpt-sha256")
+    add.add_argument("--captured-at")
+    add.add_argument("--sensitivity", choices=tuple(sorted(SENSITIVITIES)), default="normal")
+
+    p = sub.add_parser("propose", help="Create one immutable governed-memory proposal.")
+    add_governance_actor(p)
+    p.add_argument("--project", required=True)
+    p.add_argument("--subject", required=True)
+    p.add_argument("--predicate", required=True)
+    p.add_argument("--object", required=True)
+    p.add_argument("--requested-authority", choices=tuple(sorted(PROPOSAL_AUTHORITIES)), default="agent_proposal")
+    p.add_argument("--valid-from")
+    p.add_argument("--sensitivity", choices=tuple(sorted(SENSITIVITIES)), default="normal")
+    p.add_argument("--evidence", action="append", default=[])
+    p.add_argument("--source-ref", action="append", default=[])
+    p.add_argument("--rationale", default="")
+
+    p = sub.add_parser("proposals", help="Inspect the immutable proposal queue and derived status.")
+    proposal_sub = p.add_subparsers(dest="proposals_command", required=True)
+    listing = proposal_sub.add_parser("list", help="List proposals under optional project/status filters.")
+    add_common(listing)
+    listing.add_argument("--project")
+    listing.add_argument("--status", choices=("pending", "accepted", "rejected", "deferred"))
+    listing.add_argument("--no-sync", action="store_true")
+
+    p = sub.add_parser("accept", help="Ratify one pending proposal into canonical claim Markdown.")
+    add_governance_actor(p)
+    p.add_argument("proposal_id")
+    p.add_argument("--authority", required=True, choices=tuple(sorted(ACCEPTED_AUTHORITIES)))
+
+    for command in ("reject", "defer"):
+        p = sub.add_parser(command, help=f"{command.capitalize()} one pending proposal with a reason code.")
+        add_governance_actor(p)
+        p.add_argument("proposal_id")
+        p.add_argument("--reason-code", required=True, choices=tuple(sorted(REASON_CODES)))
+
+    p = sub.add_parser("dispute", help="Mark one accepted claim disputed without erasing history.")
+    add_governance_actor(p)
+    p.add_argument("claim_id")
+    p.add_argument("--reason-code", required=True, choices=tuple(sorted(REASON_CODES)))
+
+    p = sub.add_parser("supersede", help="Ratify a pending proposal as the successor to one accepted claim.")
+    add_governance_actor(p)
+    p.add_argument("claim_id")
+    p.add_argument("proposal_id")
+    p.add_argument("--authority", required=True, choices=tuple(sorted(ACCEPTED_AUTHORITIES)))
+
+    p = sub.add_parser("delete", help="Delete one governed item and retain a metadata-only tombstone.")
+    add_governance_actor(p)
+    p.add_argument("item_id")
+    p.add_argument("--reason-code", required=True, choices=tuple(sorted(REASON_CODES)))
+
+    p = sub.add_parser("history", help="Query canonical claim history, lifecycle events, and contradictions.")
+    add_common(p)
+    p.add_argument("--project")
+    p.add_argument("--subject")
+    p.add_argument("--predicate")
+    p.add_argument("--valid-at")
+    p.add_argument("--recorded-at")
+    p.add_argument("--include-deleted", action="store_true")
+    p.add_argument("--no-sync", action="store_true")
+
+    p = sub.add_parser("recover", help="Preview or roll back incomplete canonical governance transactions.")
+    add_common(p)
+    recovery_mode = p.add_mutually_exclusive_group(required=True)
+    recovery_mode.add_argument("--dry-run", action="store_true")
+    recovery_mode.add_argument("--apply", action="store_true")
 
     p = sub.add_parser("ids", help="Manage explicit durable public identities.")
     ids_sub = p.add_subparsers(dest="ids_command", required=True)
@@ -1274,13 +1679,36 @@ def main() -> int:
             command_stats(args, con, root)
         elif args.command == "doctor":
             command_doctor(args, con, root)
+        elif args.command == "evidence" and args.evidence_command == "add":
+            command_evidence_add(args, con, root)
+        elif args.command == "propose":
+            command_propose(args, con, root)
+        elif args.command == "proposals" and args.proposals_command == "list":
+            command_proposals_list(args, con, root)
+        elif args.command == "accept":
+            command_accept(args, con, root)
+        elif args.command == "reject":
+            command_reject_or_defer(args, con, root, "reject")
+        elif args.command == "defer":
+            command_reject_or_defer(args, con, root, "defer")
+        elif args.command == "dispute":
+            command_dispute(args, con, root)
+        elif args.command == "supersede":
+            command_supersede(args, con, root)
+        elif args.command == "delete":
+            command_delete(args, con, root)
+        elif args.command == "history":
+            command_history(args, con, root)
+        elif args.command == "recover":
+            command_recover(args, con, root)
         else:
             parser.error("unknown command")
     except WriterLockError as exc:
         emit_error("writer_lock_unavailable", str(exc), args.json, exc.record)
         return 2
-    except ValueError as exc:
-        emit_error("invalid_argument", str(exc), args.json)
+    except (ValueError, GovernanceError) as exc:
+        code = "governance_failed" if isinstance(exc, GovernanceError) else "invalid_argument"
+        emit_error(code, str(exc), args.json)
         return 2
     finally:
         try:

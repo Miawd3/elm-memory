@@ -60,6 +60,8 @@ def _effective_status(candidate: dict) -> str:
 
 
 def _packet_class(candidate: dict, status: str) -> str:
+    if candidate.get("contradiction"):
+        return "conflicts_or_provisional"
     path = str(candidate.get("path") or "").casefold()
     heading = str(candidate.get("heading_path") or candidate.get("heading") or "").casefold()
     text_probe = f"{path}\n{heading}\n{status}".casefold()
@@ -78,6 +80,8 @@ def _authority(candidate: dict, packet_class: str, status: str) -> str:
     if candidate.get("is_archive"):
         return "historical_memory"
     if packet_class == "conflicts_or_provisional" or status.casefold() not in _ACCEPTED_STATUSES:
+        if candidate.get("contradiction") and status.casefold() in _ACCEPTED_STATUSES:
+            return "accepted_conflicting_memory"
         return "provisional_or_unclassified_memory"
     return "accepted_project_memory"
 
