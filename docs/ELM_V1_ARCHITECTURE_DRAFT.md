@@ -1,6 +1,6 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: active staged architecture; Phases 1 and 2 verified, Phase 3 in release validation
+Status: active staged architecture; Phases 1–3 implemented and verified
 
 Date: 2026-08-26
 
@@ -44,7 +44,7 @@ The first public release is not the full claims/evidence/MCP platform. It is a c
 - The package has unit, integration, migration, concurrency, policy, and CLI-contract tests plus a sanitized benchmark.
 - The repository is a sanitized private GitHub pre-release and contains no personal ELM snapshot or private bootstrap artifact.
 - Phase 2 is complete: bounded deterministic context packets, privacy-minimized disposable retrieval traces, retention cleanup, and comparative evaluation are implemented.
-- Phase 3 is authorized and implemented on its release branch: immutable proposals, reference-only evidence metadata, canonical claim Markdown, explicit lifecycle transitions, valid/recorded-time history, contradictions, tombstones, and recoverable transactions.
+- Phase 3 is merged and live-validated: immutable proposals, reference-only evidence metadata, canonical claim Markdown, explicit lifecycle transitions, valid/recorded-time history, contradictions, tombstones, and recoverable transactions.
 - Raw evidence snapshots, MCP, embeddings, and model summarization remain deferred.
 
 ### Provisional design
@@ -592,7 +592,7 @@ Acceptance:
 
 Goal: add governed state changes after identity and evaluation exist.
 
-Status: implementation complete; cross-platform release validation pending.
+Status: implementation, cross-platform CI, package/skill installation, and live validation complete.
 
 The frozen implemented contract is documented in
 [PHASE_3_GOVERNED_MEMORY.md](PHASE_3_GOVERNED_MEMORY.md).
@@ -748,21 +748,18 @@ public tag:
 3. Whether the first public package remains `elm-memory` or changes after a
    collision and discoverability check.
 
-These do not block Phase 1 development. They do block the first public tag.
+These do not block the completed Phase 1–3 implementation. They do block the
+first public tag.
 
 ## 21. Immediate next implementation slice
 
-The active slice is **Phase 3 release validation**:
+Phase 3 is complete. No Phase 4 implementation slice is active yet.
 
-1. validate the canonical claim lifecycle and recovery contract on Windows and Linux;
-2. run the synthetic lifecycle demo and existing 50-case retrieval benchmark;
-3. prove delete-and-rebuild identity and current/history equivalence;
-4. validate the package and operator skill in isolated installations;
-5. verify schema migration and backward compatibility on a private-corpus copy;
-6. publish readiness evidence without adding private memory data.
-
-Do not implement raw evidence snapshots, MCP, embeddings, authenticated
-multi-user scopes, or model summarization in this slice.
+The next proposed gate is **Phase 4 read-only MCP and a heterogeneous-agent
+demo**. It requires explicit authorization before implementation. Its boundary
+remains a thin adapter over the verified CLI/read policy: no mutation tools, raw
+evidence snapshots, embeddings, authenticated multi-user scopes, or model
+summarization.
 
 ## 22. Supersession rule
 
