@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -64,6 +66,42 @@ class PublicCliContractTests(unittest.TestCase):
 
     def test_package_exposes_pre_release_version(self) -> None:
         self.assertEqual("0.2.0.dev0", elm_memory.__version__)
+
+    def test_json_output_is_utf8_under_a_legacy_process_encoding(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="elm-unicode-") as temporary:
+            root = Path(temporary) / "memory"
+            shutil.copytree(REPOSITORY_ROOT / "tests" / "fixtures" / "sample_elm", root)
+            target = root / "20_projects" / "orion" / "ACTIVE_CONTEXT.md"
+            target.write_text(
+                target.read_text(encoding="utf-8")
+                + "\n# Unicode probe\n\nПамять работает.\n",
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(SOURCE_ROOT)
+            environment["PYTHONIOENCODING"] = "cp1252"
+            environment["PYTHONUTF8"] = "0"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "elm_memory",
+                    "search",
+                    "Unicode probe",
+                    "--root",
+                    str(root),
+                    "--json",
+                ],
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+            )
+
+        self.assertEqual(0, completed.returncode, completed.stderr.decode("utf-8"))
+        payload = json.loads(completed.stdout.decode("utf-8"))
+        self.assertEqual(1, payload["count"])
+        self.assertIn("Память работает", payload["results"][0]["snippet"])
 
     def test_public_engine_has_no_machine_specific_default_root(self) -> None:
         source = (SOURCE_ROOT / "elm_memory" / "cli.py").read_text(encoding="utf-8")

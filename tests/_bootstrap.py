@@ -38,8 +38,6 @@ def run_cli_process(root: Path, *arguments: str) -> subprocess.CompletedProcess[
     env = os.environ.copy()
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = str(SOURCE_ROOT) if not existing else os.pathsep.join((str(SOURCE_ROOT), existing))
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
     completed = subprocess.run(
         [sys.executable, "-m", "elm_memory.cli", *arguments, "--root", str(root), "--json"],
         cwd=REPOSITORY_ROOT,
