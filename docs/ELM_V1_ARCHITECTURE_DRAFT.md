@@ -1,6 +1,6 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: active staged architecture; Phases 1–4 implemented and verified
+Status: active staged architecture; Phases 1–4 implemented and verified; Phase 5A ratified for implementation
 
 Date: 2026-08-26
 
@@ -647,25 +647,39 @@ Acceptance:
 
 ### Phase 5 — Controlled MCP mutation
 
-Goal: expose proposals safely, not unrestricted direct memory writes.
+Goal: expose proposals safely without letting an agent self-ratify memory.
+
+Status: Phase 5A ratified on 2026-08-26 and active for implementation; Phase 5B
+remains deferred and inactive. The detailed threat model, trust boundary, grant
+schema, and acceptance matrix are in
+[PHASE_5_TRUSTED_MUTATIONS.md](PHASE_5_TRUSTED_MUTATIONS.md).
 
 Prerequisites:
 
 - Phase 3 mutation tests pass;
-- trusted actor binding is defined for the deployment mode;
 - concurrency and rollback tests pass;
-- the user-facing review/ratification flow is usable.
+- Phase 5A has explicit server-side project allowlists, durable root/project
+  quotas, submission idempotency, and compound canonical transactions;
+- Phase 5B additionally requires trusted actor binding outside the agent's
+  authority and a usable exact-operation review/ratification flow.
 
-Initial tools:
+Phase 5A opt-in proposal tools (the process default remains read-only):
 
 ```text
-elm_propose_memory
-elm_list_memory_proposals
-elm_accept_memory
-elm_reject_memory
+propose_memory
+list_memory_proposals
+preview_memory_transition
 ```
 
-Direct arbitrary Markdown write is not an MCP tool.
+Phase 5A has no accepted-state mutation tool. Phase 5B may later add one
+`execute_approved_transition` tool that consumes a short-lived, single-use,
+signed grant bound to the exact operation and canonical pre-state. It remains
+disabled unless a verifier outside the agent's authority is configured.
+
+Direct arbitrary Markdown write, deletion, recovery, synchronization, identity
+migration, and trust-policy/key management are not MCP tools. MCP host prompts
+and caller-supplied actor labels are defense in depth and provenance, not
+authenticated ratification.
 
 ### Phase 6 — Optional semantic retrieval
 
@@ -764,13 +778,15 @@ first public tag.
 
 ## 21. Immediate next implementation slice
 
-Phase 4 is complete. No Phase 5 implementation slice is active yet.
+Phase 4 is complete. Phase 5A proposal-only MCP mutation was ratified on
+2026-08-26 and is the active implementation slice.
 
-The next proposed gate is **Phase 5 controlled MCP mutation**. It requires a
-separate explicit authorization and an actor-binding/review design before code
-is added. Direct arbitrary Markdown writes, raw evidence snapshots, embeddings,
-authenticated multi-user scopes, and model summarization remain outside that
-gate.
+The active gate is **Phase 5A proposal-only MCP mutation** as defined in
+[PHASE_5_TRUSTED_MUTATIONS.md](PHASE_5_TRUSTED_MUTATIONS.md). Accepted-state
+MCP mutation requires a later, separately authorized Phase 5B verifier
+deployment. Direct arbitrary Markdown writes, raw evidence snapshots,
+embeddings, authenticated multi-user scopes, and model summarization remain
+outside the Phase 5A gate.
 
 ## 22. Supersession rule
 
