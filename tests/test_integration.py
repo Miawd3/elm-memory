@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+import shutil
 import sqlite3
 import unittest
 
@@ -87,6 +88,54 @@ class IndexIntegrationTests(unittest.TestCase):
             }
 
         self.assertEqual(before, after)
+
+    def test_exact_archive_copy_with_same_uid_uses_path_bound_projection(self) -> None:
+        with FixtureCopy() as root:
+            run_cli(root, "ids", "assign", "--apply")
+            source = root / "20_projects" / "orion" / "PROJECT_HUB.md"
+            archive = root / "20_projects" / "orion" / "backups" / "PROJECT_HUB.snapshot.md"
+            shutil.copy2(source, archive)
+            archive_bytes = archive.read_bytes()
+
+            synced = run_cli(root, "sync")
+            active = run_cli(root, "search", "Aurora gateway PostgreSQL")["results"][0]
+            historical = run_cli(
+                root,
+                "search",
+                "Aurora gateway PostgreSQL",
+                "--include-archive",
+                "--limit",
+                "10",
+                "--no-sync",
+            )
+            archived = next(
+                item for item in historical["results"]
+                if item["path"].endswith("PROJECT_HUB.snapshot.md")
+            )
+            first_archive_key = archived["section_key"]
+            rebuilt = run_cli(root, "rebuild")
+            historical_after = run_cli(
+                root,
+                "search",
+                "Aurora gateway PostgreSQL",
+                "--include-archive",
+                "--limit",
+                "10",
+                "--no-sync",
+            )
+            archived_after = next(
+                item for item in historical_after["results"]
+                if item["path"].endswith("PROJECT_HUB.snapshot.md")
+            )
+            archive_after_bytes = archive.read_bytes()
+
+        self.assertEqual([], synced["errors"])
+        self.assertEqual([], rebuilt["errors"])
+        self.assertIsNotNone(active["document_uid"])
+        self.assertIsNone(archived["document_uid"])
+        self.assertEqual("path", archived["section_namespace"])
+        self.assertEqual(first_archive_key, archived_after["section_key"])
+        self.assertEqual(archive_bytes, archive_after_bytes)
 
 
 if __name__ == "__main__":

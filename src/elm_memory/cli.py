@@ -295,7 +295,13 @@ def index_one(con: sqlite3.Connection, root: Path, path: Path, force: bool = Fal
     text = raw.decode("utf-8-sig", errors="replace")
     lines = text.splitlines(keepends=True)
     meta, metadata_end = parse_metadata(lines)
-    document_uid = validate_document_uid(meta.get("elm_id"))
+    source_document_uid = validate_document_uid(meta.get("elm_id"))
+    archive = 1 if is_archive_path(relative) else 0
+    # An archive may be an exact byte-for-byte copy of its active document.
+    # Projecting the same durable UID twice would collide in both documents and
+    # derived section keys. Keep the UID in canonical metadata/properties, but
+    # bind the disposable archive projection to its historical path.
+    document_uid = None if archive else source_document_uid
     old = con.execute(
         "SELECT id,content_hash,document_uid FROM documents WHERE path=?", (relative,)
     ).fetchone()
@@ -311,8 +317,6 @@ def index_one(con: sqlite3.Connection, root: Path, path: Path, force: bool = Fal
     tags = split_csv(meta.get("tags"))
     area, project = derive_area_project(relative)
     namespace = derive_namespace(area, project)
-    archive = 1 if is_archive_path(relative) else 0
-
     if old:
         doc_id = int(old["id"])
         con.execute(

@@ -2,7 +2,7 @@
 
 Status: implemented contract under pre-release validation
 
-Package version: `0.3.0.dev0`
+Package version: `0.3.0.dev1`
 
 ## Purpose
 
@@ -64,6 +64,12 @@ billed tokens.
 Archive, project, namespace, status, path-prefix, and tag filters use the same
 read-policy boundary as search. Archives remain excluded unless
 `--include-archive` is explicit.
+
+An exact archive/backup copy may retain the active document's `ELM ID` in its
+canonical bytes. Its disposable archive projection deliberately reports
+`document_uid: null` and uses path-bound section keys so it cannot collide with
+the active document's durable identity. The archived metadata itself is not
+rewritten.
 
 Phase 2 labels memory as accepted project memory, historical memory, or
 provisional/unclassified memory. It never labels retrieved memory as verified

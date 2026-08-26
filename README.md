@@ -116,6 +116,11 @@ Search, outline, read, and related results expose legacy integer IDs together wi
 - derived `section_key` values that survive index deletion and rebuild;
 - `section_namespace`, which reports whether the key is document-UID-bound or path-bound.
 
+Exact archive copies may retain an active document's UID in their unchanged
+Markdown bytes. Their disposable archive projections intentionally expose a
+null `document_uid` and path-bound section keys, avoiding collisions with the
+active identity while preserving opt-in historical retrieval.
+
 Indexing never inserts IDs into Markdown. Preview the explicit migration first:
 
 ```bash
