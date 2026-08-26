@@ -15,10 +15,18 @@ from pathlib import Path, PurePosixPath
 import re
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Iterable
 
 from .atomic import atomic_write_bytes
+from .context import (
+    DEFAULT_TRACE_RETENTION_DAYS,
+    MIN_CONTEXT_BUDGET,
+    build_context_packet,
+    cleanup_retrieval_traces,
+    write_retrieval_trace,
+)
 from .identity import (
     derive_namespace,
     derive_section_key,
@@ -34,6 +42,7 @@ from .schema import (
     ensure_schema,
     schema_version,
 )
+from .tokens import estimate_tokens
 
 CONFIG_POINTER = Path.home() / ".elm-system" / "root"
 META_KEYS = {
@@ -190,11 +199,6 @@ def split_csv(value: str | None) -> list[str]:
     if not value:
         return []
     return [x.strip() for x in value.split(",") if x.strip()]
-
-
-def estimate_tokens(text: str) -> int:
-    # Deliberately model-agnostic. Good enough for retrieval budgeting.
-    return max(1, (len(text) + 3) // 4)
 
 
 def parse_sections(lines: list[str], metadata_end: int) -> list[dict]:
@@ -502,10 +506,15 @@ def _path_allowed(path: str, args) -> bool:
     return True
 
 
-def command_search(args, con: sqlite3.Connection, root: Path):
-    if not args.no_sync:
-        _sync_from_args(args, con, root)
-    fts = safe_fts_query(args.query, broad=args.broad)
+def search_sections(
+    con: sqlite3.Connection,
+    query: str,
+    args,
+    *,
+    limit: int | None = None,
+    broad: bool | None = None,
+) -> list[dict]:
+    fts = safe_fts_query(query, broad=args.broad if broad is None else broad)
     conditions = ["sections_fts MATCH ?"]
     params: list[object] = [fts]
     policy_conditions, policy_params = _policy_sql("d", args)
@@ -528,7 +537,8 @@ def command_search(args, con: sqlite3.Connection, root: Path):
         SELECT d.id AS document_id,d.document_uid,s.id AS section_id,s.section_key,s.section_namespace,
                d.path,d.title,d.namespace,d.project,d.status,d.last_updated,d.is_archive,
                s.heading,s.heading_path,s.start_line,s.end_line,
-               s.token_estimate, -bm25(sections_fts, 0.0,0.0,3.0,2.0,1.0,1.5,1.0,1.0) AS score,
+               s.token_estimate,s.text,
+               -bm25(sections_fts, 0.0,0.0,3.0,2.0,1.0,1.5,1.0,1.0) AS score,
                snippet(sections_fts, 4, '[', ']', ' ... ', 28) AS snippet
         FROM sections_fts
         JOIN sections s ON s.id=CAST(sections_fts.section_id AS INTEGER)
@@ -537,7 +547,7 @@ def command_search(args, con: sqlite3.Connection, root: Path):
         ORDER BY score DESC, d.last_updated DESC
         LIMIT ?
     """
-    params.append(args.limit)
+    params.append(args.limit if limit is None else limit)
     rows = con.execute(sql, params).fetchall()
     results = []
     for r in rows:
@@ -545,7 +555,191 @@ def command_search(args, con: sqlite3.Connection, root: Path):
         item["is_archive"] = bool(item["is_archive"])
         item["tags"] = fetch_tags(con, int(item["document_id"]))
         results.append(item)
-    emit({"query": args.query, "count": len(results), "results": results}, args.json)
+    return results
+
+
+def command_search(args, con: sqlite3.Connection, root: Path):
+    if not args.no_sync:
+        _sync_from_args(args, con, root)
+    results = search_sections(con, args.query, args)
+    public_results = []
+    for result in results:
+        item = dict(result)
+        item.pop("text", None)
+        public_results.append(item)
+    emit({"query": args.query, "count": len(public_results), "results": public_results}, args.json)
+
+
+def _context_supplemental_sections(
+    con: sqlite3.Connection,
+    args,
+    project: str | None,
+) -> list[dict]:
+    if not project:
+        return []
+    conditions = ["d.is_archive=0", "d.project=?"]
+    params: list[object] = [project]
+    if args.namespace:
+        conditions.append("d.namespace=?")
+        params.append(args.namespace)
+    if args.status:
+        conditions.append("lower(coalesce(d.status,''))=lower(?)")
+        params.append(args.status)
+    if args.path_prefix:
+        conditions.append("d.path LIKE ?")
+        params.append(args.path_prefix.rstrip("/") + "/%")
+    for tag in args.tag:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM document_tags dt JOIN tags t ON t.id=dt.tag_id "
+            "WHERE dt.document_id=d.id AND lower(t.name)=lower(?))"
+        )
+        params.append(tag)
+    conditions.extend(
+        (
+            "(lower(d.path) LIKE '%/active_context.md' OR lower(d.path) LIKE '%/project_hub.md')",
+            "(lower(s.heading) LIKE '%current%' OR lower(s.heading) LIKE '%focus%' "
+            "OR lower(s.heading) LIKE '%constraint%')",
+        )
+    )
+    rows = con.execute(
+        f"""SELECT d.id AS document_id,d.document_uid,s.id AS section_id,s.section_key,
+                   s.section_namespace,d.path,d.title,d.namespace,d.project,d.status,
+                   d.last_updated,d.is_archive,s.heading,s.heading_path,s.start_line,
+                   s.end_line,s.token_estimate,s.text,0.0 AS score,'' AS snippet
+            FROM sections s JOIN documents d ON d.id=s.document_id
+            WHERE {' AND '.join(conditions)}
+            ORDER BY CASE
+                WHEN lower(s.heading) LIKE '%constraint%' THEN 0
+                WHEN lower(d.path) LIKE '%/active_context.md' THEN 1
+                ELSE 2 END,
+                d.last_updated DESC,s.ordinal
+            LIMIT 4""",
+        params,
+    ).fetchall()
+    results = []
+    for row in rows:
+        item = dict(row)
+        item["is_archive"] = bool(item["is_archive"])
+        item["tags"] = fetch_tags(con, int(item["document_id"]))
+        results.append(item)
+    return results
+
+
+def command_context(args, con: sqlite3.Connection, root: Path):
+    started = time.perf_counter()
+    if args.budget < MIN_CONTEXT_BUDGET:
+        raise ValueError(
+            f"Context budget must be at least {MIN_CONTEXT_BUDGET} estimated tokens."
+        )
+    if args.limit < 1:
+        raise ValueError("Context candidate limit must be at least 1.")
+    if args.trace_retention_days < 0:
+        raise ValueError("Trace retention days cannot be negative.")
+    if not args.no_sync:
+        _sync_from_args(args, con, root)
+
+    results = search_sections(con, args.task, args, limit=args.limit, broad=False)
+    fallback_used = False
+    if not results and len(WORD_RE.findall(args.task)) > 1:
+        results = search_sections(con, args.task, args, limit=args.limit, broad=True)
+        fallback_used = bool(results)
+
+    projects = {
+        str(item["project"])
+        for item in results[:5]
+        if item.get("project") is not None
+    }
+    resolved_project = args.project
+    scope_warnings: list[str] = []
+    if resolved_project is None and len(projects) == 1:
+        resolved_project = next(iter(projects))
+        scope_warnings.append(
+            f"Project scope was inferred from the top retrieval candidates as {resolved_project}."
+        )
+    elif resolved_project is None and len(projects) > 1:
+        scope_warnings.append(
+            "Project scope is ambiguous; pass --project to prevent cross-project context mixing."
+        )
+
+    supplemental = _context_supplemental_sections(con, args, resolved_project)
+    # FTS matches stay first so a small budget cannot be consumed entirely by
+    # generic current-state supplements before the task-relevant source appears.
+    candidates = results + supplemental
+    scope = {
+        "project": resolved_project,
+        "project_resolution": "explicit" if args.project else ("inferred" if resolved_project else "unresolved"),
+        "namespace": args.namespace,
+        "include_archive": bool(args.include_archive),
+        "status": args.status,
+    }
+    response = build_context_packet(
+        args.task,
+        candidates,
+        args.budget,
+        scope=scope,
+        additional_warnings=scope_warnings,
+    )
+    latency_ms = (time.perf_counter() - started) * 1000
+    candidate_keys = list(dict.fromkeys(
+        str(candidate["section_key"])
+        for candidate in candidates
+        if candidate.get("section_key")
+    ))
+    if args.no_trace:
+        response["trace"] = {"recorded": False, "reason": "disabled_by_request"}
+    else:
+        filters = {
+            "project": args.project,
+            "resolved_project": resolved_project,
+            "namespace": args.namespace,
+            "include_archive": bool(args.include_archive),
+            "status": args.status,
+            "path_prefix": args.path_prefix,
+            "tags": list(args.tag),
+        }
+        try:
+            response["trace"] = write_retrieval_trace(
+                root,
+                task=args.task,
+                include_query_text=args.trace_query_text,
+                project=resolved_project,
+                filters=filters,
+                candidate_section_keys=candidate_keys,
+                selected_section_keys=response["selected_section_keys"],
+                estimated_tokens=response["estimated_tokens"],
+                latency_ms=latency_ms,
+                fallback_used=fallback_used,
+                retention_days=args.trace_retention_days,
+            )
+        except OSError as exc:
+            response["trace"] = {
+                "recorded": False,
+                "reason": "trace_write_failed",
+                "error": str(exc),
+            }
+    response["fallback_used"] = fallback_used
+    response["latency_ms"] = round(latency_ms, 3)
+    emit(response, args.json)
+
+
+def command_traces_cleanup(args, root: Path) -> None:
+    if args.retention_days is not None and args.retention_days < 0:
+        raise ValueError("Trace retention days cannot be negative.")
+    if args.apply:
+        with WriterLock(
+            root,
+            "trace-cleanup",
+            timeout=args.lock_timeout,
+            recover_stale=args.recover_stale_lock,
+        ):
+            result = cleanup_retrieval_traces(
+                root, apply=True, retention_days=args.retention_days
+            )
+    else:
+        result = cleanup_retrieval_traces(
+            root, apply=False, retention_days=args.retention_days
+        )
+    emit(result, args.json)
 
 
 def resolve_document(con: sqlite3.Connection, ref: str, args) -> sqlite3.Row:
@@ -945,6 +1139,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--broad", action="store_true", help="Use OR between query terms for recall-heavy fallback search.")
     p.add_argument("--no-sync", action="store_true")
 
+    p = sub.add_parser("context", help="Compile a bounded, source-linked context packet for a task.")
+    add_common(p)
+    p.add_argument("task")
+    p.add_argument("--budget", type=int, required=True, help="Maximum estimated tokens in the rendered packet.")
+    p.add_argument("--tag", action="append", default=[])
+    add_read_policy(p)
+    p.add_argument("--status")
+    p.add_argument("--path-prefix")
+    p.add_argument("--limit", type=int, default=24, help="Maximum FTS candidates considered before packing.")
+    p.add_argument("--broad", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--no-sync", action="store_true")
+    trace_mode = p.add_mutually_exclusive_group()
+    trace_mode.add_argument("--no-trace", action="store_true", help="Do not record a disposable retrieval trace.")
+    trace_mode.add_argument(
+        "--trace-query-text",
+        action="store_true",
+        help="Explicitly include raw task text in the otherwise metadata-only trace.",
+    )
+    p.add_argument(
+        "--trace-retention-days",
+        type=int,
+        default=DEFAULT_TRACE_RETENTION_DAYS,
+        help="Declared retention window for the disposable trace (default: 30).",
+    )
+
     p = sub.add_parser("outline", help="Return the heading tree/section IDs for a document ID or relative path.")
     add_common(p); add_read_policy(p); p.add_argument("document"); p.add_argument("--no-sync", action="store_true")
 
@@ -969,6 +1188,19 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--apply", action="store_true")
     assign.add_argument("--path-prefix")
     assign.add_argument("--include-archive", action="store_true")
+
+    p = sub.add_parser("traces", help="Manage disposable privacy-minimized retrieval traces.")
+    traces_sub = p.add_subparsers(dest="traces_command", required=True)
+    cleanup = traces_sub.add_parser("cleanup", help="Preview or remove expired retrieval traces.")
+    add_common(cleanup)
+    cleanup.add_argument(
+        "--retention-days",
+        type=int,
+        help="Override per-trace expiry using age in days from recorded_at.",
+    )
+    cleanup_mode = cleanup.add_mutually_exclusive_group(required=True)
+    cleanup_mode.add_argument("--dry-run", action="store_true")
+    cleanup_mode.add_argument("--apply", action="store_true")
     return parser
 
 
@@ -990,6 +1222,18 @@ def main() -> int:
             return 2
         except (ValueError, RuntimeError) as exc:
             emit_error("ids_assign_failed", str(exc), args.json)
+            return 2
+    if args.command == "traces":
+        try:
+            if args.traces_command == "cleanup":
+                command_traces_cleanup(args, root)
+                return 0
+            parser.error("unknown traces command")
+        except WriterLockError as exc:
+            emit_error("writer_lock_unavailable", str(exc), args.json, exc.record)
+            return 2
+        except ValueError as exc:
+            emit_error("trace_cleanup_failed", str(exc), args.json)
             return 2
 
     try:
@@ -1014,6 +1258,8 @@ def main() -> int:
             command_rebuild(args, con, root); return 0
         elif args.command == "search":
             command_search(args, con, root)
+        elif args.command == "context":
+            command_context(args, con, root)
         elif args.command == "outline":
             command_outline(args, con, root)
         elif args.command == "read":
@@ -1028,6 +1274,9 @@ def main() -> int:
             parser.error("unknown command")
     except WriterLockError as exc:
         emit_error("writer_lock_unavailable", str(exc), args.json, exc.record)
+        return 2
+    except ValueError as exc:
+        emit_error("invalid_argument", str(exc), args.json)
         return 2
     finally:
         try:

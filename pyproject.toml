@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "elm-memory"
-version = "0.2.0.dev0"
+version = "0.3.0.dev0"
 description = "Local, inspectable project memory and deterministic context retrieval for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
