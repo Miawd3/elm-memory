@@ -7,14 +7,33 @@ Uses only the Python standard library and SQLite FTS5.
 from __future__ import annotations
 
 import argparse
+import codecs
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from typing import Iterable
+
+from .atomic import atomic_write_bytes
+from .identity import (
+    derive_namespace,
+    derive_section_key,
+    new_document_uid,
+    normalize_heading_path,
+    validate_document_uid,
+)
+from .locking import WriterLock, WriterLockError
+from .schema import (
+    INDEX_SCHEMA_VERSION,
+    SchemaMigrationError,
+    UnsupportedSchemaError,
+    ensure_schema,
+    schema_version,
+)
 
 CONFIG_POINTER = Path.home() / ".elm-system" / "root"
 META_KEYS = {
@@ -25,6 +44,7 @@ META_KEYS = {
     "last updated": "last_updated",
     "status": "status",
     "summary": "summary",
+    "elm id": "elm_id",
 }
 EXPECTED_META = ("Title", "Scope", "Tags", "Last updated", "Status")
 ARCHIVE_PARTS = {"backups", "99_archive"}
@@ -65,94 +85,40 @@ def db_path(root: Path) -> Path:
     return root / ".elm" / "index.sqlite"
 
 
-def connect(root: Path) -> sqlite3.Connection:
+def connect(
+    root: Path,
+    *,
+    schema_locked: bool = False,
+    lock_timeout: float = 10.0,
+    recover_stale: bool = False,
+) -> sqlite3.Connection:
     p = db_path(root)
     p.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(p)
+    con = sqlite3.connect(p, timeout=max(0.1, lock_timeout))
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys=ON")
+    con.execute(f"PRAGMA busy_timeout={max(1, int(lock_timeout * 1000))}")
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=NORMAL")
-    ensure_schema(con)
+    try:
+        version = schema_version(con)
+        if version is None or version < INDEX_SCHEMA_VERSION:
+            if schema_locked:
+                ensure_schema(con)
+            else:
+                with WriterLock(
+                    root,
+                    "index-schema-migration",
+                    timeout=lock_timeout,
+                    recover_stale=recover_stale,
+                ):
+                    ensure_schema(con)
+        else:
+            ensure_schema(con)
+    except BaseException:
+        con.close()
+        raise
     return con
-
-
-def ensure_schema(con: sqlite3.Connection) -> None:
-    con.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS documents (
-            id INTEGER PRIMARY KEY,
-            path TEXT NOT NULL UNIQUE,
-            area TEXT,
-            project TEXT,
-            title TEXT,
-            scope TEXT,
-            summary TEXT,
-            status TEXT,
-            last_updated TEXT,
-            mtime_ns INTEGER NOT NULL,
-            size_bytes INTEGER NOT NULL,
-            content_hash TEXT NOT NULL,
-            is_archive INTEGER NOT NULL DEFAULT 0,
-            indexed_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS sections (
-            id INTEGER PRIMARY KEY,
-            document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-            parent_id INTEGER REFERENCES sections(id) ON DELETE SET NULL,
-            heading TEXT,
-            heading_path TEXT,
-            level INTEGER NOT NULL,
-            ordinal INTEGER NOT NULL,
-            start_line INTEGER NOT NULL,
-            end_line INTEGER NOT NULL,
-            token_estimate INTEGER NOT NULL,
-            text TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_sections_document ON sections(document_id, ordinal);
-
-        CREATE TABLE IF NOT EXISTS tags (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE COLLATE NOCASE
-        );
-        CREATE TABLE IF NOT EXISTS document_tags (
-            document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-            tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-            PRIMARY KEY(document_id, tag_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS properties (
-            document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-            key TEXT NOT NULL,
-            value TEXT,
-            PRIMARY KEY(document_id, key)
-        );
-
-        CREATE TABLE IF NOT EXISTS links (
-            id INTEGER PRIMARY KEY,
-            source_document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-            target_document_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,
-            target_path TEXT NOT NULL,
-            anchor_text TEXT,
-            relation_type TEXT NOT NULL DEFAULT 'markdown_link'
-        );
-        CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_document_id);
-        CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_document_id);
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS sections_fts USING fts5(
-            section_id UNINDEXED,
-            document_id UNINDEXED,
-            title,
-            heading,
-            body,
-            tags,
-            scope,
-            summary,
-            tokenize='unicode61 remove_diacritics 2'
-        );
-        """
-    )
 
 
 def relpath(root: Path, path: Path) -> str:
@@ -309,24 +275,33 @@ def index_one(con: sqlite3.Connection, root: Path, path: Path, force: bool = Fal
     raw = path.read_bytes()
     digest = sha256_bytes(raw)
     st = path.stat()
-    old = con.execute("SELECT id, content_hash FROM documents WHERE path=?", (relative,)).fetchone()
-    if old and old["content_hash"] == digest and not force:
-        return False, int(old["id"])
-
     text = raw.decode("utf-8-sig", errors="replace")
     lines = text.splitlines(keepends=True)
     meta, metadata_end = parse_metadata(lines)
+    document_uid = validate_document_uid(meta.get("elm_id"))
+    old = con.execute(
+        "SELECT id,content_hash,document_uid FROM documents WHERE path=?", (relative,)
+    ).fetchone()
+    if (
+        old
+        and old["content_hash"] == digest
+        and old["document_uid"] == document_uid
+        and not force
+    ):
+        return False, int(old["id"])
+
     title = meta.get("title") or path.stem
     tags = split_csv(meta.get("tags"))
     area, project = derive_area_project(relative)
+    namespace = derive_namespace(area, project)
     archive = 1 if is_archive_path(relative) else 0
 
     if old:
         doc_id = int(old["id"])
         con.execute(
-            """UPDATE documents SET area=?, project=?, title=?, scope=?, summary=?, status=?,
-               last_updated=?, mtime_ns=?, size_bytes=?, content_hash=?, is_archive=?, indexed_at=? WHERE id=?""",
-            (area, project, title, meta.get("scope"), meta.get("summary"), meta.get("status"),
+            """UPDATE documents SET area=?,project=?,namespace=?,document_uid=?,title=?,scope=?,summary=?,status=?,
+               last_updated=?,mtime_ns=?,size_bytes=?,content_hash=?,is_archive=?,indexed_at=? WHERE id=?""",
+            (area, project, namespace, document_uid, title, meta.get("scope"), meta.get("summary"), meta.get("status"),
              meta.get("last_updated"), st.st_mtime_ns, st.st_size, digest, archive, now_iso(), doc_id),
         )
         con.execute("DELETE FROM sections_fts WHERE document_id=?", (doc_id,))
@@ -336,10 +311,10 @@ def index_one(con: sqlite3.Connection, root: Path, path: Path, force: bool = Fal
         con.execute("DELETE FROM links WHERE source_document_id=?", (doc_id,))
     else:
         cur = con.execute(
-            """INSERT INTO documents(path, area, project, title, scope, summary, status, last_updated,
-               mtime_ns, size_bytes, content_hash, is_archive, indexed_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (relative, area, project, title, meta.get("scope"), meta.get("summary"), meta.get("status"),
+            """INSERT INTO documents(path,area,project,namespace,document_uid,title,scope,summary,status,last_updated,
+               mtime_ns,size_bytes,content_hash,is_archive,indexed_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (relative, area, project, namespace, document_uid, title, meta.get("scope"), meta.get("summary"), meta.get("status"),
              meta.get("last_updated"), st.st_mtime_ns, st.st_size, digest, archive, now_iso()),
         )
         doc_id = int(cur.lastrowid)
@@ -356,12 +331,20 @@ def index_one(con: sqlite3.Connection, root: Path, path: Path, force: bool = Fal
 
     parsed = parse_sections(lines, metadata_end)
     ordinal_to_id: dict[int, int] = {}
+    heading_occurrences: dict[str, int] = {}
     for ordinal, sec in enumerate(parsed):
         parent_id = ordinal_to_id.get(sec["parent_ordinal"]) if sec["parent_ordinal"] is not None else None
+        normalized_heading = normalize_heading_path(sec["heading_path"])
+        occurrence = heading_occurrences.get(normalized_heading, 0)
+        heading_occurrences[normalized_heading] = occurrence + 1
+        section_key, section_namespace = derive_section_key(
+            document_uid, relative, sec["heading_path"], occurrence
+        )
         cur = con.execute(
-            """INSERT INTO sections(document_id,parent_id,heading,heading_path,level,ordinal,start_line,end_line,token_estimate,text)
-               VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (doc_id, parent_id, sec["heading"], sec["heading_path"], sec["level"], ordinal,
+            """INSERT INTO sections(document_id,parent_id,section_key,section_namespace,heading,heading_path,
+               level,ordinal,start_line,end_line,token_estimate,text)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (doc_id, parent_id, section_key, section_namespace, sec["heading"], sec["heading_path"], sec["level"], ordinal,
              sec["start_line"], sec["end_line"], estimate_tokens(sec["text"]), sec["text"]),
         )
         section_id = int(cur.lastrowid)
@@ -401,28 +384,30 @@ def resolve_link_targets(con: sqlite3.Connection) -> None:
             con.execute("UPDATE links SET target_document_id=? WHERE id=?", (candidates[0], link["id"]))
 
 
-def sync(con: sqlite3.Connection, root: Path, force: bool = False) -> dict:
+def _sync_unlocked(con: sqlite3.Connection, root: Path, force: bool = False) -> dict:
     files = list(iter_markdown(root))
     current = {relpath(root, p) for p in files}
     existing = {r["path"]: r["id"] for r in con.execute("SELECT id,path FROM documents")}
     removed = [p for p in existing if p not in current]
-    for p in removed:
-        doc_id = existing[p]
-        con.execute("DELETE FROM sections_fts WHERE document_id=?", (doc_id,))
-        con.execute("DELETE FROM documents WHERE id=?", (doc_id,))
+    with con:
+        for p in removed:
+            doc_id = existing[p]
+            con.execute("DELETE FROM sections_fts WHERE document_id=?", (doc_id,))
+            con.execute("DELETE FROM documents WHERE id=?", (doc_id,))
 
     changed = 0
     unchanged = 0
     errors: list[dict] = []
     for path in files:
         try:
-            did_change, _ = index_one(con, root, path, force=force)
+            with con:
+                did_change, _ = index_one(con, root, path, force=force)
             changed += int(did_change)
             unchanged += int(not did_change)
         except Exception as exc:  # keep the rest of the vault indexable
             errors.append({"path": relpath(root, path), "error": str(exc)})
-    resolve_link_targets(con)
-    con.commit()
+    with con:
+        resolve_link_targets(con)
     return {
         "root": str(root),
         "database": str(db_path(root)),
@@ -432,6 +417,26 @@ def sync(con: sqlite3.Connection, root: Path, force: bool = False) -> dict:
         "removed": len(removed),
         "errors": errors,
     }
+
+
+def sync(
+    con: sqlite3.Connection,
+    root: Path,
+    force: bool = False,
+    *,
+    acquire_lock: bool = True,
+    lock_timeout: float = 10.0,
+    recover_stale: bool = False,
+) -> dict:
+    if not acquire_lock:
+        return _sync_unlocked(con, root, force=force)
+    with WriterLock(
+        root,
+        "index-sync",
+        timeout=lock_timeout,
+        recover_stale=recover_stale,
+    ):
+        return _sync_unlocked(con, root, force=force)
 
 
 def safe_fts_query(query: str, broad: bool = False) -> str:
@@ -449,17 +454,50 @@ def fetch_tags(con: sqlite3.Connection, doc_id: int) -> list[str]:
     )]
 
 
+def _sync_from_args(args, con: sqlite3.Connection, root: Path, *, force: bool = False) -> dict:
+    return sync(
+        con,
+        root,
+        force=force,
+        lock_timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    )
+
+
+def _policy_sql(alias: str, args) -> tuple[list[str], list[object]]:
+    conditions: list[str] = []
+    params: list[object] = []
+    if not args.include_archive:
+        conditions.append(f"{alias}.is_archive=0")
+    if args.project:
+        conditions.append(f"{alias}.project=?")
+        params.append(args.project)
+    if args.namespace:
+        conditions.append(f"{alias}.namespace=?")
+        params.append(args.namespace)
+    return conditions, params
+
+
+def _path_allowed(path: str, args) -> bool:
+    if not args.include_archive and is_archive_path(path):
+        return False
+    area, project = derive_area_project(path)
+    if args.project and project != args.project:
+        return False
+    if args.namespace and derive_namespace(area, project) != args.namespace:
+        return False
+    return True
+
+
 def command_search(args, con: sqlite3.Connection, root: Path):
     if not args.no_sync:
-        sync(con, root)
+        _sync_from_args(args, con, root)
     fts = safe_fts_query(args.query, broad=args.broad)
     conditions = ["sections_fts MATCH ?"]
     params: list[object] = [fts]
-    if not args.include_archive:
-        conditions.append("d.is_archive=0")
-    if args.project:
-        conditions.append("d.project=?")
-        params.append(args.project)
+    policy_conditions, policy_params = _policy_sql("d", args)
+    conditions.extend(policy_conditions)
+    params.extend(policy_params)
     if args.status:
         conditions.append("lower(coalesce(d.status,''))=lower(?)")
         params.append(args.status)
@@ -474,8 +512,9 @@ def command_search(args, con: sqlite3.Connection, root: Path):
         params.append(tag)
 
     sql = f"""
-        SELECT d.id AS document_id, s.id AS section_id, d.path, d.title, d.project, d.status,
-               d.last_updated, d.is_archive, s.heading, s.heading_path, s.start_line, s.end_line,
+        SELECT d.id AS document_id,d.document_uid,s.id AS section_id,s.section_key,s.section_namespace,
+               d.path,d.title,d.namespace,d.project,d.status,d.last_updated,d.is_archive,
+               s.heading,s.heading_path,s.start_line,s.end_line,
                s.token_estimate, -bm25(sections_fts, 0.0,0.0,3.0,2.0,1.0,1.5,1.0,1.0) AS score,
                snippet(sections_fts, 4, '[', ']', ' ... ', 28) AS snippet
         FROM sections_fts
@@ -496,60 +535,97 @@ def command_search(args, con: sqlite3.Connection, root: Path):
     emit({"query": args.query, "count": len(results), "results": results}, args.json)
 
 
-def resolve_document(con: sqlite3.Connection, ref: str) -> sqlite3.Row:
-    row = None
+def resolve_document(con: sqlite3.Connection, ref: str, args) -> sqlite3.Row:
+    reference_conditions: list[str]
+    reference_params: list[object]
     if ref.isdigit():
-        row = con.execute("SELECT * FROM documents WHERE id=?", (int(ref),)).fetchone()
+        reference_conditions = ["d.id=?"]
+        reference_params = [int(ref)]
+    elif ref.lower().startswith("doc_"):
+        reference_conditions = ["d.document_uid=?"]
+        reference_params = [ref.lower()]
+    else:
+        reference_conditions = ["d.path=?"]
+        reference_params = [ref.replace("\\", "/")]
+    policy_conditions, policy_params = _policy_sql("d", args)
+    conditions = reference_conditions + policy_conditions
+    row = con.execute(
+        f"SELECT d.* FROM documents d WHERE {' AND '.join(conditions)}",
+        reference_params + policy_params,
+    ).fetchone()
     if row is None:
-        row = con.execute("SELECT * FROM documents WHERE path=?", (ref.replace("\\", "/"),)).fetchone()
+        raise SystemExit(f"Document not found under the current read policy: {ref}")
+    return row
+
+
+def resolve_section(con: sqlite3.Connection, ref: str, args) -> sqlite3.Row:
+    if ref.isdigit():
+        reference = "s.id=?"
+        value: object = int(ref)
+    else:
+        reference = "s.section_key=?"
+        value = ref.lower()
+    policy_conditions, policy_params = _policy_sql("d", args)
+    conditions = [reference] + policy_conditions
+    row = con.execute(
+        f"""SELECT s.*,d.path,d.document_uid,d.namespace,d.title,d.project,d.status,
+                   d.last_updated,d.is_archive
+            FROM sections s JOIN documents d ON d.id=s.document_id
+            WHERE {' AND '.join(conditions)}""",
+        [value] + policy_params,
+    ).fetchone()
     if row is None:
-        raise SystemExit(f"Document not found: {ref}")
+        raise SystemExit(f"Section not found under the current read policy: {ref}")
     return row
 
 
 def command_outline(args, con: sqlite3.Connection, root: Path):
     if not args.no_sync:
-        sync(con, root)
-    doc = resolve_document(con, args.document)
+        _sync_from_args(args, con, root)
+    doc = resolve_document(con, args.document, args)
     rows = con.execute(
-        "SELECT id,parent_id,heading,heading_path,level,ordinal,start_line,end_line,token_estimate FROM sections WHERE document_id=? ORDER BY ordinal",
+        """SELECT id,parent_id,section_key,section_namespace,heading,heading_path,level,
+                  ordinal,start_line,end_line,token_estimate
+           FROM sections WHERE document_id=? ORDER BY ordinal""",
         (doc["id"],),
     ).fetchall()
     emit({"document": dict(doc), "sections": [dict(r) for r in rows]}, args.json)
 
 
 def command_read(args, con: sqlite3.Connection, root: Path):
-    row = con.execute(
-        """SELECT s.*, d.path, d.title, d.project, d.status, d.last_updated
-           FROM sections s JOIN documents d ON d.id=s.document_id WHERE s.id=?""",
-        (args.section_id,),
-    ).fetchone()
-    if row is None:
-        raise SystemExit(f"Section not found: {args.section_id}. Run search/outline again after syncing.")
-    out = dict(row)
-    emit(out, args.json)
+    emit(dict(resolve_section(con, args.section, args)), args.json)
 
 
 def command_related(args, con: sqlite3.Connection, root: Path):
     if not args.no_sync:
-        sync(con, root)
-    doc = resolve_document(con, args.document)
-    outgoing = [dict(r) for r in con.execute(
-        """SELECT l.relation_type,l.anchor_text,l.target_path,d.id AS target_id,d.title AS target_title,d.status AS target_status
+        _sync_from_args(args, con, root)
+    doc = resolve_document(con, args.document, args)
+    outgoing_rows = [dict(r) for r in con.execute(
+        """SELECT l.relation_type,l.anchor_text,l.target_path,d.id AS target_id,
+                  d.document_uid AS target_uid,d.namespace AS target_namespace,
+                  d.project AS target_project,d.is_archive AS target_is_archive,
+                  d.title AS target_title,d.status AS target_status
            FROM links l LEFT JOIN documents d ON d.id=l.target_document_id
            WHERE l.source_document_id=? ORDER BY l.relation_type,l.target_path""", (doc["id"],)
     )]
+    outgoing = [row for row in outgoing_rows if _path_allowed(row["target_path"], args)]
+    incoming_conditions, incoming_params = _policy_sql("s", args)
     incoming = [dict(r) for r in con.execute(
-        """SELECT l.relation_type,l.anchor_text,s.id AS source_id,s.path AS source_path,s.title AS source_title,s.status AS source_status
+        f"""SELECT l.relation_type,l.anchor_text,s.id AS source_id,s.document_uid AS source_uid,
+                  s.namespace AS source_namespace,s.path AS source_path,s.title AS source_title,
+                  s.status AS source_status
            FROM links l JOIN documents s ON s.id=l.source_document_id
-           WHERE l.target_document_id=? ORDER BY s.path""", (doc["id"],)
+           WHERE l.target_document_id=?
+             {('AND ' + ' AND '.join(incoming_conditions)) if incoming_conditions else ''}
+           ORDER BY s.path""",
+        [doc["id"]] + incoming_params,
     )]
     emit({"document": dict(doc), "outgoing": outgoing, "incoming": incoming}, args.json)
 
 
 def command_stats(args, con: sqlite3.Connection, root: Path):
     if not args.no_sync:
-        sync(con, root)
+        _sync_from_args(args, con, root)
     row = con.execute(
         """SELECT COUNT(*) docs, SUM(CASE WHEN is_archive=0 THEN 1 ELSE 0 END) active_docs,
                   SUM(CASE WHEN is_archive=1 THEN 1 ELSE 0 END) archive_docs FROM documents"""
@@ -564,6 +640,7 @@ def command_stats(args, con: sqlite3.Connection, root: Path):
             """SELECT COUNT(*) c FROM links l JOIN documents d ON d.id=l.source_document_id
                WHERE l.target_document_id IS NULL AND d.is_archive=0"""
         ).fetchone()["c"],
+        "index_schema_version": schema_version(con),
         "database": str(db_path(root)),
     })
     emit(out, args.json)
@@ -571,7 +648,7 @@ def command_stats(args, con: sqlite3.Connection, root: Path):
 
 def command_doctor(args, con: sqlite3.Connection, root: Path):
     if not args.no_sync:
-        sync(con, root)
+        _sync_from_args(args, con, root)
     issues: list[dict] = []
     active = con.execute("SELECT * FROM documents WHERE is_archive=0 ORDER BY path").fetchall()
     for d in active:
@@ -601,17 +678,187 @@ def command_doctor(args, con: sqlite3.Connection, root: Path):
     emit({"issue_count": len(issues), "issues": issues[:args.limit], "truncated": len(issues) > args.limit}, args.json)
 
 
+def _add_document_uid(raw: bytes, document_uid: str) -> bytes:
+    has_bom = raw.startswith(codecs.BOM_UTF8)
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Canonical Markdown must be valid UTF-8 before assigning an ELM ID.") from exc
+    lines = text.splitlines(keepends=True)
+    metadata, metadata_end = parse_metadata(lines)
+    existing = validate_document_uid(metadata.get("elm_id"))
+    if existing:
+        return raw
+    insert_at = metadata_end
+    while insert_at > 0 and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines.insert(insert_at, f"ELM ID: {document_uid}{newline}")
+    updated = "".join(lines).encode("utf-8")
+    return (codecs.BOM_UTF8 + updated) if has_bom else updated
+
+
+def _plan_document_uids(root: Path, args) -> list[dict]:
+    plan: list[dict] = []
+    seen_uids: dict[str, str] = {}
+    prefix = args.path_prefix.replace("\\", "/").strip("/") if args.path_prefix else None
+    for path in sorted(iter_markdown(root), key=lambda item: relpath(root, item).casefold()):
+        relative = relpath(root, path)
+        if not args.include_archive and is_archive_path(relative):
+            continue
+        if prefix and relative != prefix and not relative.startswith(prefix + "/"):
+            continue
+        raw = path.read_bytes()
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"Cannot assign an ID to non-UTF-8 Markdown: {relative}") from exc
+        metadata, _ = parse_metadata(text.splitlines(keepends=True))
+        existing = validate_document_uid(metadata.get("elm_id"))
+        if existing:
+            previous = seen_uids.get(existing)
+            if previous:
+                raise ValueError(f"Duplicate ELM ID {existing}: {previous} and {relative}")
+            seen_uids[existing] = relative
+            continue
+        document_uid = new_document_uid()
+        while document_uid in seen_uids:
+            document_uid = new_document_uid()
+        seen_uids[document_uid] = relative
+        plan.append({
+            "path": relative,
+            "document_uid": document_uid,
+            "content_hash": sha256_bytes(raw),
+            "raw": raw,
+            "updated": _add_document_uid(raw, document_uid),
+        })
+    return plan
+
+
+def _public_uid_plan(plan: list[dict]) -> list[dict]:
+    return [
+        {
+            "path": item["path"],
+            "document_uid": item["document_uid"],
+            "content_hash": item["content_hash"],
+        }
+        for item in plan
+    ]
+
+
+def _write_uid_manifest(backup_root: Path, status: str, plan: list[dict], error: str | None = None) -> None:
+    manifest = {
+        "format_version": 1,
+        "operation": "ids-assign",
+        "status": status,
+        "recorded_at": now_iso(),
+        "documents": _public_uid_plan(plan),
+    }
+    if error:
+        manifest["error"] = error
+    atomic_write_bytes(
+        backup_root / "manifest.json",
+        (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+    )
+
+
+def _apply_document_uids(root: Path, args, plan: list[dict]) -> dict:
+    if not plan:
+        return {
+            "mode": "apply",
+            "planned": 0,
+            "changed": 0,
+            "backup": None,
+            "documents": [],
+        }
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_root = root / "backups" / f"elm-ids-{stamp}-{os.getpid()}"
+    changed: list[dict] = []
+    with WriterLock(
+        root,
+        "ids-assign",
+        timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    ):
+        for item in plan:
+            current = (root / item["path"]).read_bytes()
+            if sha256_bytes(current) != item["content_hash"]:
+                raise RuntimeError(
+                    f"Canonical Markdown changed after dry planning: {item['path']}. No files were modified."
+                )
+        for item in plan:
+            atomic_write_bytes(backup_root / item["path"], item["raw"])
+        _write_uid_manifest(backup_root, "prepared", plan)
+        try:
+            for item in plan:
+                target = root / item["path"]
+                atomic_write_bytes(target, item["updated"])
+                changed.append(item)
+                metadata, _ = parse_metadata(
+                    target.read_text(encoding="utf-8-sig").splitlines(keepends=True)
+                )
+                if validate_document_uid(metadata.get("elm_id")) != item["document_uid"]:
+                    raise RuntimeError(f"Post-write UID validation failed: {item['path']}")
+        except BaseException as exc:
+            rollback_errors: list[str] = []
+            for item in reversed(changed):
+                try:
+                    atomic_write_bytes(root / item["path"], item["raw"])
+                except BaseException as rollback_exc:
+                    rollback_errors.append(f"{item['path']}: {rollback_exc}")
+            detail = str(exc)
+            if rollback_errors:
+                detail += "; rollback errors: " + " | ".join(rollback_errors)
+            _write_uid_manifest(backup_root, "rolled_back", plan, detail)
+            raise RuntimeError(detail) from exc
+        _write_uid_manifest(backup_root, "applied", plan)
+    return {
+        "mode": "apply",
+        "planned": len(plan),
+        "changed": len(changed),
+        "backup": str(backup_root),
+        "documents": _public_uid_plan(plan),
+    }
+
+
+def command_ids_assign(args, root: Path) -> None:
+    plan = _plan_document_uids(root, args)
+    if args.dry_run:
+        emit({
+            "mode": "dry-run",
+            "planned": len(plan),
+            "changed": 0,
+            "backup": None,
+            "documents": _public_uid_plan(plan),
+        }, args.json)
+        return
+    emit(_apply_document_uids(root, args, plan), args.json)
+
+
 def command_rebuild(args, con: sqlite3.Connection, root: Path):
     con.close()
     p = db_path(root)
-    for suffix in ("", "-wal", "-shm"):
+    with WriterLock(
+        root,
+        "index-rebuild",
+        timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    ):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                Path(str(p) + suffix).unlink()
+            except FileNotFoundError:
+                pass
+        con2 = connect(
+            root,
+            schema_locked=True,
+            lock_timeout=args.lock_timeout,
+            recover_stale=args.recover_stale_lock,
+        )
         try:
-            Path(str(p) + suffix).unlink()
-        except FileNotFoundError:
-            pass
-    con2 = connect(root)
-    result = sync(con2, root, force=True)
-    con2.close()
+            result = sync(con2, root, force=True, acquire_lock=False)
+        finally:
+            con2.close()
     emit(result, args.json)
 
 
@@ -632,9 +879,36 @@ def emit(data, as_json: bool) -> None:
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def emit_error(
+    code: str,
+    message: str,
+    as_json: bool,
+    details: dict | None = None,
+) -> None:
+    if as_json:
+        payload = {"error": code, "message": message}
+        if details:
+            payload["details"] = details
+        print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        return
+    print(f"elm: {message}", file=sys.stderr)
+
+
 def add_common(p):
-    p.add_argument("--root", help="ELM root. Defaults to ELM_ROOT or the known Windows ELM path.")
+    p.add_argument("--root", help="ELM root. Defaults to ELM_ROOT, a config pointer, or the current directory.")
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    p.add_argument("--lock-timeout", type=float, default=10.0, help="Seconds to wait for the ELM writer lock.")
+    p.add_argument(
+        "--recover-stale-lock",
+        action="store_true",
+        help="Explicitly recover a lock whose owner is gone or whose age exceeds the stale threshold.",
+    )
+
+
+def add_read_policy(p) -> None:
+    p.add_argument("--project")
+    p.add_argument("--namespace", choices=("workspace", "shared", "project"))
+    p.add_argument("--include-archive", action="store_true")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -651,28 +925,37 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(p)
     p.add_argument("query")
     p.add_argument("--tag", action="append", default=[])
-    p.add_argument("--project")
+    add_read_policy(p)
     p.add_argument("--status")
     p.add_argument("--path-prefix")
     p.add_argument("--limit", type=int, default=12)
-    p.add_argument("--include-archive", action="store_true")
     p.add_argument("--broad", action="store_true", help="Use OR between query terms for recall-heavy fallback search.")
     p.add_argument("--no-sync", action="store_true")
 
     p = sub.add_parser("outline", help="Return the heading tree/section IDs for a document ID or relative path.")
-    add_common(p); p.add_argument("document"); p.add_argument("--no-sync", action="store_true")
+    add_common(p); add_read_policy(p); p.add_argument("document"); p.add_argument("--no-sync", action="store_true")
 
-    p = sub.add_parser("read", help="Read one indexed section by section ID.")
-    add_common(p); p.add_argument("section_id", type=int)
+    p = sub.add_parser("read", help="Read one indexed section by numeric ID or stable section key.")
+    add_common(p); add_read_policy(p); p.add_argument("section")
 
     p = sub.add_parser("related", help="Return explicit outgoing/incoming document links.")
-    add_common(p); p.add_argument("document"); p.add_argument("--no-sync", action="store_true")
+    add_common(p); add_read_policy(p); p.add_argument("document"); p.add_argument("--no-sync", action="store_true")
 
     p = sub.add_parser("stats", help="Show index counts and health summary.")
     add_common(p); p.add_argument("--no-sync", action="store_true")
 
     p = sub.add_parser("doctor", help="Report metadata/link/duplicate issues without editing ELM.")
     add_common(p); p.add_argument("--limit", type=int, default=100); p.add_argument("--no-sync", action="store_true")
+
+    p = sub.add_parser("ids", help="Manage explicit durable public identities.")
+    ids_sub = p.add_subparsers(dest="ids_command", required=True)
+    assign = ids_sub.add_parser("assign", help="Explicitly assign document UUIDs with backups and rollback.")
+    add_common(assign)
+    mode = assign.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--apply", action="store_true")
+    assign.add_argument("--path-prefix")
+    assign.add_argument("--include-archive", action="store_true")
     return parser
 
 
@@ -682,10 +965,37 @@ def main() -> int:
     root = resolve_root(getattr(args, "root", None))
     if not root.is_dir():
         raise SystemExit(f"ELM root is not a directory: {root}")
-    con = connect(root)
+    if args.command == "ids":
+        try:
+            if args.ids_command == "assign":
+                command_ids_assign(args, root)
+                return 0
+            parser.error("unknown ids command")
+        except WriterLockError as exc:
+            emit_error("writer_lock_unavailable", str(exc), args.json, exc.record)
+            return 2
+        except (ValueError, RuntimeError) as exc:
+            emit_error("ids_assign_failed", str(exc), args.json)
+            return 2
+
+    try:
+        con = connect(
+            root,
+            lock_timeout=args.lock_timeout,
+            recover_stale=args.recover_stale_lock,
+        )
+    except WriterLockError as exc:
+        emit_error("writer_lock_unavailable", str(exc), args.json, exc.record)
+        return 2
+    except UnsupportedSchemaError as exc:
+        emit_error("unsupported_index_schema", str(exc), args.json)
+        return 2
+    except SchemaMigrationError as exc:
+        emit_error("index_schema_migration_failed", str(exc), args.json)
+        return 2
     try:
         if args.command == "sync":
-            emit(sync(con, root, force=args.force), args.json)
+            emit(_sync_from_args(args, con, root, force=args.force), args.json)
         elif args.command == "rebuild":
             command_rebuild(args, con, root); return 0
         elif args.command == "search":
@@ -702,6 +1012,9 @@ def main() -> int:
             command_doctor(args, con, root)
         else:
             parser.error("unknown command")
+    except WriterLockError as exc:
+        emit_error("writer_lock_unavailable", str(exc), args.json, exc.record)
+        return 2
     finally:
         try:
             con.close()

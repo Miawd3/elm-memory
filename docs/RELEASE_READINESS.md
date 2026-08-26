@@ -39,12 +39,17 @@ Package version: `0.1.0.dev0`
 
 ## Blocking decisions before public publication
 
-1. Select a license and add `LICENSE`.
-2. Ratify or change the repository and distribution name `elm-memory`.
-3. Ratify or change the provisional minimum Python version, currently 3.11.
-4. Refresh the pinned checkout action to a native Node.js 24 release and rerun
+1. Ratify or change the repository and distribution name `elm-memory`.
+2. Ratify or change the provisional minimum Python version, currently 3.11.
+3. Refresh the pinned checkout action to a native Node.js 24 release and rerun
    hosted CI.
-5. Enable GitHub private vulnerability reporting and update `SECURITY.md`.
+4. Enable GitHub private vulnerability reporting and update `SECURITY.md`.
+
+## Decision resolved after the Phase 0 baseline
+
+- Apache-2.0 is the accepted project license. The repository and built wheel
+  include `LICENSE` and `NOTICE`, and package metadata uses the SPDX expression
+  `Apache-2.0`.
 
 ## Phase 0 completion gate
 

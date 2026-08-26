@@ -33,18 +33,26 @@ If no root is available, say so instead of inventing memory claims.
    elm search "task terms" --json
    ```
 
-2. Inspect candidate paths, headings, status, snippets, and token estimates.
+2. Inspect candidate paths, headings, status, snippets, token estimates,
+   `document_uid`, and stable `section_key` values.
 3. Read one exact section:
 
    ```bash
-   elm read SECTION_ID --json
+   elm read SECTION_KEY --json
    ```
+
+   Legacy numeric section IDs remain accepted during the compatibility period,
+   but do not store them as durable references.
 
 4. Use `outline` to expand within the selected document or `related` to follow explicit links.
 5. If strict search produces no useful candidate, retry once with `--broad`.
 6. Stop when additional memory is unlikely to change the decision or implementation.
 
 Ordinary retrieval excludes `backups` and `99_archive`. Include archives only when the user asks for history or a superseded decision is necessary.
+
+When the task is already project-scoped, pass the same `--project` or
+`--namespace` policy to search, outline, read, and related. Do not retry a denied
+direct ID with broader policy unless the user actually needs that wider scope.
 
 ## Verify implementation facts
 
@@ -65,3 +73,14 @@ Do not store raw chats, routine edits, terminal dumps, credentials, private keys
 Update the smallest canonical Markdown file. Do not edit `.elm/index.sqlite` manually. Run `elm sync --json` when immediate verification matters, and use `elm doctor --json --no-sync` to verify memory health.
 
 When multiple agents deliberate, they may propose memory candidates, but exactly one writer finalizes accepted durable memory after ratification.
+
+## Explicit identity migration
+
+Indexing never adds IDs to Markdown. Run `elm ids assign` only when the user has
+authorized canonical mutation. Preview first with `--dry-run`, inspect the paths,
+then use `--apply`. The command creates targeted backups, holds the single-writer
+lock, and rolls back an incomplete batch. Never use `--include-archive` by default.
+
+If a writer lock is unavailable, wait or report the owner information. Use
+`--recover-stale-lock` only after the prior process is known to be gone; recovery
+is explicit and logged.

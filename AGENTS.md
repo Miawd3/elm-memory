@@ -2,7 +2,7 @@
 
 ## Current phase
 
-The repository is implementing Phase 0: a sanitized, regression-protected public baseline. Do not implement claims, evidence snapshots, stable-ID migrations, context packing, or MCP mutation unless the architecture phase changes explicitly.
+The repository is implementing Phase 1: stable identity, versioned disposable-index migrations, consistent read policy, and single-writer concurrency. Do not implement claims, evidence snapshots, context packing, or MCP mutation unless the architecture phase changes explicitly.
 
 ## Invariants
 
@@ -29,4 +29,4 @@ When modifying the Agent Skill, also run its `quick_validate.py` check. When mod
 
 ## Publication boundary
 
-No public tag or GitHub publication is ready until a license, repository/package name, minimum Python version, and public commit identity have been ratified.
+Apache-2.0 is the accepted project license. No public tag is ready until the repository/package name, minimum Python version, release documentation, and hosted Phase 1 CI have been ratified or verified.

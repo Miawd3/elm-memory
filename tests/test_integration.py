@@ -57,6 +57,7 @@ class IndexIntegrationTests(unittest.TestCase):
         self.assertEqual(8, stats["docs"])
         self.assertEqual(6, stats["active_docs"])
         self.assertEqual(2, stats["archive_docs"])
+        self.assertEqual(1, stats["index_schema_version"])
         self.assertEqual("ok", quick_check)
 
     def test_changed_document_is_reindexed_without_touching_others(self) -> None:
@@ -70,6 +71,22 @@ class IndexIntegrationTests(unittest.TestCase):
 
         self.assertEqual(1, changed["changed"])
         self.assertEqual(before["results"][0]["document_id"], after["results"][0]["document_id"])
+        self.assertEqual(before["results"][0]["section_key"], after["results"][0]["section_key"])
+
+    def test_sync_and_rebuild_never_modify_canonical_markdown(self) -> None:
+        with FixtureCopy() as root:
+            before = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in root.rglob("*.md")
+            }
+            run_cli(root, "sync")
+            run_cli(root, "rebuild")
+            after = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in root.rglob("*.md")
+            }
+
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

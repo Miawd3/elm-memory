@@ -1,8 +1,8 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: provisional architecture for user review
+Status: active staged architecture; Phase 1 implementation in progress
 
-Date: 2026-08-25
+Date: 2026-08-26
 
 Project: ELM — External Local Memory
 
@@ -36,14 +36,13 @@ The first public release is not the full claims/evidence/MCP platform. It is a c
 
 - Canonical project knowledge is stored in Markdown.
 - `.elm/index.sqlite` is disposable and rebuildable.
-- The current CLI provides `sync`, `rebuild`, `search`, `outline`, `read`, `related`, `stats`, and `doctor`.
+- The current CLI provides `sync`, `rebuild`, `search`, `outline`, `read`, `related`, `stats`, `doctor`, and explicit `ids assign` mutation.
 - Retrieval uses SQLite FTS5 and section-level reads.
-- Ordinary search excludes `backups` and `99_archive`.
-- Current document and section IDs are SQLite integer row IDs.
-- Section IDs are recreated whenever a document is reindexed.
-- `ensure_schema` creates tables but has no schema-version or migration framework.
-- The current package has benchmark and installation verification scripts, but no unit-test suite.
-- The current repository is not yet a clean public release repository and contains private bootstrap artifacts.
+- Archive, project, and namespace policy applies to search, outline, read, and related, including direct-ID reads.
+- SQLite integer IDs remain compatibility references; optional document UUIDs and derived section keys provide rebuild-stable public identity.
+- The disposable index has an explicit schema version and an in-place migration from the unversioned Phase 0 schema.
+- The package has unit, integration, migration, concurrency, policy, and CLI-contract tests plus a sanitized benchmark.
+- The repository is a sanitized private GitHub pre-release and contains no personal ELM snapshot or private bootstrap artifact.
 
 ### Provisional design
 
@@ -509,7 +508,9 @@ Repository rules:
 - release artifacts are built from Git tags;
 - checksums and provenance apply to releases, not private user data.
 
-License remains an open user decision. Apache-2.0 is a reasonable candidate because it includes an explicit patent grant, but it should not be chosen silently.
+The user delegated the license choice for broad use and modification. Apache-2.0
+is accepted because it is permissive and includes an explicit contributor patent
+grant; the repository includes the official license text and a compact NOTICE.
 
 ## 15. Implementation roadmap
 
@@ -723,37 +724,43 @@ Before Phase 3 exists, the public baseline demo should use already-ratified Mark
 - web UI;
 - secure-erasure guarantees across Git and backups.
 
-## 20. Open decisions before public release
+## 20. Remaining decisions before public release
 
-Only these decisions can materially change Phase 0:
+The license is resolved as Apache-2.0. These decisions still affect the first
+public tag:
 
 1. Public repository name and final one-sentence positioning.
-2. License: Apache-2.0, MIT, or another reviewed choice.
-3. Minimum supported Python version.
-4. Whether the first public package is installed as `elm-memory`, `elm-local-memory`, or another collision-checked name.
+2. Minimum supported Python version.
+3. Whether the first public package remains `elm-memory` or changes after a
+   collision and discoverability check.
 
-These do not block writing regression tests or preparing a sanitized repository skeleton. They do block the first public tag.
+These do not block Phase 1 development. They do block the first public tag.
 
 ## 21. Immediate next implementation slice
 
-Do not implement claims, evidence snapshots, MCP, or automatic ID mutation next.
+Do not implement claims, evidence snapshots, context packing, or MCP mutation in
+this slice.
 
-The next slice is **Phase 0 public baseline**:
+The active slice is **Phase 1 foundations**:
 
-1. create a clean repository separate from the personal ELM and private bootstrap archives;
-2. copy only the current generic engine, sanitized docs, installer logic, and benchmark harness;
-3. add unit and integration tests around existing behavior;
-4. run the tests on Windows locally;
-5. add Linux CI configuration;
-6. produce a release-readiness report before any public push.
+1. version the disposable index schema and migrate the unversioned Phase 0 index;
+2. parse optional document UUIDs and derive rebuild-stable section keys;
+3. expose explicit, backed-up, rollback-safe `elm ids assign` migration;
+4. preserve numeric compatibility while enforcing archive/project/namespace
+   policy across every content-bearing read path;
+5. serialize writers with a cross-platform lock and atomic canonical writes;
+6. validate migrations, rollback, direct-ID policy, killed-writer recovery, and
+   Windows/Linux CI before beginning Phase 2.
 
-This slice is independently useful, reversible, and supplies the safety net required for every later architectural change.
+This slice makes later provenance references safe without introducing claims or
+model-dependent behavior.
 
 ## 22. Supersession rule
 
-This document does not automatically erase the original multi-agent handoff. Until user review:
+This document does not erase the original multi-agent handoff:
 
 - the original handoff remains source material and research provenance;
-- this document is the active corrected implementation hypothesis;
-- only explicitly accepted decisions should be copied into durable ELM canon;
-- implementation evidence may refine or reject provisional details without reopening the fixed invariants.
+- this document is the active staged architecture ratified for Phase 1 work;
+- implemented and tested behavior becomes repository truth;
+- later unimplemented phases remain provisional until user ratification or
+  implementation evidence refines them.

@@ -120,7 +120,7 @@ def run_benchmark(cases_path: Path) -> dict:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the sanitized ELM Phase 0 benchmark.")
+    parser = argparse.ArgumentParser(description="Run the sanitized ELM deterministic-core benchmark.")
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--assert-pass", action="store_true")

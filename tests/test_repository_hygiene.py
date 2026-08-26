@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+import tomllib
 import unittest
 
 from _bootstrap import REPOSITORY_ROOT
@@ -71,6 +72,19 @@ class RepositoryHygieneTests(unittest.TestCase):
                 missing.append(target)
 
         self.assertEqual([], missing)
+
+    def test_apache_license_is_declared_and_packaged(self) -> None:
+        configuration = tomllib.loads(
+            (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        license_text = (REPOSITORY_ROOT / "LICENSE").read_text(encoding="utf-8")
+        notice_text = (REPOSITORY_ROOT / "NOTICE").read_text(encoding="utf-8")
+
+        self.assertEqual("Apache-2.0", configuration["project"]["license"])
+        self.assertEqual(["LICENSE", "NOTICE"], configuration["project"]["license-files"])
+        self.assertIn("Apache License", license_text)
+        self.assertIn("Version 2.0, January 2004", license_text)
+        self.assertIn("ELM contributors", notice_text)
 
 
 if __name__ == "__main__":
