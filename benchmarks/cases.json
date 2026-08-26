@@ -114,5 +114,155 @@
     "project": "lighthouse",
     "broad": true,
     "expected_path": "20_projects/lighthouse/PROJECT_HUB.md"
+  },
+  {
+    "id": "orion_accepts_batches",
+    "query": "accepts telemetry batches",
+    "expected_path": "20_projects/orion/PROJECT_HUB.md"
+  },
+  {
+    "id": "orion_durable_postgres17",
+    "query": "durable records PostgreSQL 17",
+    "expected_path": "20_projects/orion/PROJECT_HUB.md"
+  },
+  {
+    "id": "orion_time_and_logs",
+    "query": "persisted timestamps application logs",
+    "expected_path": "20_projects/orion/PROJECT_HUB.md"
+  },
+  {
+    "id": "orion_no_network",
+    "query": "fixture require network access",
+    "expected_path": "20_projects/orion/PROJECT_HUB.md"
+  },
+  {
+    "id": "orion_python_baseline",
+    "query": "implementation baseline Python 3.11",
+    "expected_path": "20_projects/orion/PROJECT_HUB.md"
+  },
+  {
+    "id": "orion_embeddings_boundary",
+    "query": "Semantic embeddings Orion baseline",
+    "expected_path": "20_projects/orion/PROJECT_HUB.md"
+  },
+  {
+    "id": "orion_next_milestone",
+    "query": "next milestone parser regression suite",
+    "expected_path": "20_projects/orion/PROJECT_HUB.md"
+  },
+  {
+    "id": "orion_nested_parsing",
+    "query": "Validate nested heading parsing",
+    "expected_path": "20_projects/orion/ACTIVE_CONTEXT.md"
+  },
+  {
+    "id": "orion_exact_exclusion",
+    "query": "exact section reads exclusion",
+    "expected_path": "20_projects/orion/ACTIVE_CONTEXT.md"
+  },
+  {
+    "id": "orion_archived_material",
+    "query": "archived Mercury material",
+    "expected_path": "20_projects/orion/ACTIVE_CONTEXT.md"
+  },
+  {
+    "id": "orion_confirm_benchmark",
+    "query": "Run sanitized benchmark confirm",
+    "expected_path": "20_projects/orion/ACTIVE_CONTEXT.md"
+  },
+  {
+    "id": "orion_odr001",
+    "query": "ODR-001 PostgreSQL storage",
+    "expected_path": "20_projects/orion/DECISIONS.md"
+  },
+  {
+    "id": "orion_storage_sentence",
+    "query": "Orion uses PostgreSQL 17",
+    "expected_path": "20_projects/orion/DECISIONS.md"
+  },
+  {
+    "id": "orion_odr002",
+    "query": "ODR-002 UTC time",
+    "expected_path": "20_projects/orion/DECISIONS.md"
+  },
+  {
+    "id": "orion_normalized_utc",
+    "query": "normalized UTC before storage",
+    "expected_path": "20_projects/orion/DECISIONS.md"
+  },
+  {
+    "id": "orion_odr003",
+    "query": "ODR-003 Structured logs",
+    "expected_path": "20_projects/orion/DECISIONS.md"
+  },
+  {
+    "id": "orion_log_format",
+    "query": "newline-delimited JSON stable",
+    "expected_path": "20_projects/orion/DECISIONS.md"
+  },
+  {
+    "id": "orion_odr004",
+    "query": "ODR-004 Deterministic retrieval",
+    "expected_path": "20_projects/orion/DECISIONS.md"
+  },
+  {
+    "id": "orion_fts_baseline",
+    "query": "baseline uses SQLite FTS5",
+    "expected_path": "20_projects/orion/DECISIONS.md"
+  },
+  {
+    "id": "lighthouse_generates_runbooks",
+    "query": "generates offline runbooks",
+    "expected_path": "20_projects/lighthouse/PROJECT_HUB.md"
+  },
+  {
+    "id": "lighthouse_packages_bundles",
+    "query": "packages signed Markdown bundles",
+    "expected_path": "20_projects/lighthouse/PROJECT_HUB.md"
+  },
+  {
+    "id": "lighthouse_no_orion_db",
+    "query": "does not share Orion database decisions",
+    "expected_path": "20_projects/lighthouse/PROJECT_HUB.md"
+  },
+  {
+    "id": "lighthouse_next_atlas",
+    "query": "Next Milestone Atlas handbook",
+    "expected_path": "20_projects/lighthouse/PROJECT_HUB.md"
+  },
+  {
+    "id": "lighthouse_atlas_canonical",
+    "query": "Atlas handbook canonical synthetic reference",
+    "expected_path": "20_projects/lighthouse/REFERENCES.md"
+  },
+  {
+    "id": "lighthouse_signed_verification",
+    "query": "signed-bundle verification sequence",
+    "expected_path": "20_projects/lighthouse/REFERENCES.md"
+  },
+  {
+    "id": "lighthouse_namespace_fixture",
+    "query": "Lighthouse documentation project namespace",
+    "expected_path": "20_projects/lighthouse/PROJECT_HUB.md"
+  },
+  {
+    "id": "lighthouse_plain_bundles",
+    "query": "offline runbooks plain Markdown bundles",
+    "expected_path": "20_projects/lighthouse/PROJECT_HUB.md"
+  },
+  {
+    "id": "root_entrypoint",
+    "query": "Entry point Orion Lighthouse",
+    "expected_path": "00_registry/ROOT_INDEX.md"
+  },
+  {
+    "id": "root_orion_summary",
+    "query": "Orion demonstrates accepted decisions",
+    "expected_path": "00_registry/ROOT_INDEX.md"
+  },
+  {
+    "id": "root_lighthouse_summary",
+    "query": "Lighthouse supplies second project namespace",
+    "expected_path": "00_registry/ROOT_INDEX.md"
   }
 ]
