@@ -2,12 +2,12 @@
 
 ELM is a local, inspectable project-memory and deterministic retrieval layer for coding agents. Canonical knowledge stays in Markdown; SQLite FTS5 is a disposable index that can be deleted and rebuilt.
 
-This repository is in **Phase 4 / pre-alpha**. In addition to deterministic
+This repository is in **Phase 5A / pre-alpha**. In addition to deterministic
 retrieval, stable identity, and bounded context packets, it now implements a
 governed proposal-to-claim lifecycle with reference-only evidence metadata,
-valid/recorded-time history, recoverable canonical transactions, and a thin
-read-only MCP adapter verified through two heterogeneous agent hosts. Raw
-evidence snapshots and MCP mutation remain deferred.
+valid/recorded-time history, recoverable canonical transactions, the Phase 4
+read-only MCP adapter, and an opt-in proposal-only MCP profile. Raw evidence
+snapshots and accepted-state MCP mutation remain deferred.
 
 ## Why ELM
 
@@ -33,13 +33,13 @@ python -m venv .venv
 ```
 
 Activate the environment, then choose the CLI-only install or add the optional
-MCP extra when an agent host will launch the read-only server:
+MCP extra when an agent host will launch the server:
 
 ```bash
 # CLI only
 python -m pip install --no-deps -e .
 
-# CLI plus read-only MCP adapter
+# CLI plus MCP adapter
 python -m pip install -e ".[mcp]"
 ```
 
@@ -114,6 +114,7 @@ Available commands:
 sync  rebuild  status  search  context  outline  read  related  stats  doctor
 evidence add  propose  proposals list  accept  reject  defer  dispute
 supersede  delete  history  recover
+root-id init  proposal-submit  proposal-preview
 ids assign  traces cleanup
 ```
 
@@ -252,6 +253,53 @@ Configuration examples, the exact boundary, and validation evidence are in
 accepted decision and stable section identity through Antigravity/Gemini and
 Codex; Claude Code is also supported when authenticated.
 
+## Opt-in proposal-only MCP
+
+Phase 5A preserves the seven-tool read-only process default. An operator may
+explicitly add `propose_memory`, `list_memory_proposals`, and
+`preview_memory_transition` for a fixed set of existing projects. The profile
+contains no tool that accepts, rejects, defers, supersedes, disputes, deletes,
+recovers, synchronizes, rebuilds, migrates, or otherwise changes accepted
+memory.
+
+Initialize the portable root identity outside MCP, inspect the dry run, and
+refresh the disposable index:
+
+```bash
+elm root-id init --root /path/to/memory --dry-run --creator operator:local --json
+elm root-id init --root /path/to/memory --apply --creator operator:local --json
+elm rebuild --root /path/to/memory --json
+```
+
+Then launch the opt-in profile with server-side project allowlists:
+
+```bash
+elm-mcp --root /path/to/memory \
+  --mutation-mode proposal-only \
+  --allow-project orion
+```
+
+`propose_memory` requires a caller-generated `submission_<uuid4>` and a
+timezone-aware `valid_from`. It stamps `mcp:unverified` and
+`agent_proposal`, stores evidence metadata by locator and hash only, and writes
+the evidence-plus-proposal bundle under one recoverable writer transaction.
+Reusing a submission ID with the same normalized payload returns the original
+proposal; a different payload is rejected. If an operator explicitly deletes
+the proposal, a privacy-safe replay-key hash in its tombstone permanently
+retires that submission identity without retaining the proposal body. Project/
+root quotas, request and reference limits, and a process-local rate limit are
+enforced before writing. Proposal list/preview freshness checks and reads are
+serialized against the canonical writer, so a failed concurrent projection
+cannot make stale SQLite state appear current.
+
+New proposals use canonical format v2 and a domain-separated RFC 8785 payload
+digest. Version-1 proposals remain readable and eligible for explicit CLI
+review. The Phase 5A preview is marked `signable: false`; it contains no
+executor identity or policy digest and cannot authorize a transition.
+
+The full threat model and contract are in
+[docs/PHASE_5_TRUSTED_MUTATIONS.md](docs/PHASE_5_TRUSTED_MUTATIONS.md).
+
 ## Agent Skill
 
 A host-neutral Agent Skill is available at `skills/elm-memory-operator`. It teaches compatible coding agents when to retrieve ELM context and how to preserve authority boundaries. The CLI remains usable without skill support.
@@ -297,9 +345,10 @@ Phase order:
 1. stable identity, migrations, and concurrency;
 2. bounded context packets and privacy-safe traces;
 3. governed proposals, evidence references, claims, and temporal history;
-4. read-only MCP and heterogeneous-host validation (current phase);
-5. controlled MCP mutation, only after a separate authorization design;
-6. optional semantic retrieval only after measured deterministic failures.
+4. read-only MCP and heterogeneous-host validation;
+5. Phase 5A: opt-in proposal-only MCP with no accepted-state tool (current phase);
+6. Phase 5B: signed accepted-state execution only after a separate verifier is selected;
+7. optional semantic retrieval only after measured deterministic failures.
 
 ## License, privacy, and publication status
 
@@ -311,7 +360,8 @@ conditions, and includes an explicit contributor patent grant.
 
 The GitHub repository remains a private pre-release while the external-facing
 release decisions and documentation are completed. Phase 4 validation evidence
-is recorded in [docs/PHASE_4_READINESS.md](docs/PHASE_4_READINESS.md).
+is recorded in [docs/PHASE_4_READINESS.md](docs/PHASE_4_READINESS.md); the Phase
+5A contract is [docs/PHASE_5_TRUSTED_MUTATIONS.md](docs/PHASE_5_TRUSTED_MUTATIONS.md).
 
 ## Current limitations
 
@@ -323,4 +373,4 @@ is recorded in [docs/PHASE_4_READINESS.md](docs/PHASE_4_READINESS.md).
 - ELM performs no LLM summarization and cannot recover synonyms absent from the lexical corpus;
 - evidence records contain locators and hashes only; ELM does not retain or verify source payload availability;
 - deletion removes active canonical/derived ELM state but cannot erase Git history, filesystem snapshots, or external backups;
-- there is no raw evidence store, authenticated multi-user service, or MCP mutation API.
+- there is no raw evidence store, authenticated multi-user service, or accepted-state MCP mutation API.

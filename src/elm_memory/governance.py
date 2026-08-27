@@ -13,13 +13,18 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import sqlite3
+from urllib.parse import urlsplit
 import uuid
 
 from .atomic import atomic_create_bytes, atomic_write_bytes
+from .canonical import CanonicalJSONError, canonical_json_bytes, parse_closed_json
 from .locking import WriterLock
 
 
 CANONICAL_FORMAT_VERSION = 1
+PROPOSAL_FORMAT_VERSION = 2
+SUBMISSION_DIGEST_DOMAIN = b"ELM-PROPOSAL-SUBMISSION-V1\x00"
+SUBMISSION_RETIREMENT_DOMAIN = b"ELM-PROPOSAL-SUBMISSION-RETIREMENT-V1\x00"
 ID_PREFIXES = {
     "proposal": "proposal_",
     "evidence": "evidence_",
@@ -27,6 +32,8 @@ ID_PREFIXES = {
     "event": "event_",
     "tombstone": "tombstone_",
     "transaction": "transaction_",
+    "root": "root_",
+    "submission": "submission_",
 }
 PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -43,6 +50,7 @@ PROPOSAL_AUTHORITIES = {
 }
 SENSITIVITIES = {"normal", "restricted"}
 EVIDENCE_KINDS = {"repository_file", "document_section", "external_uri"}
+SOURCE_CHANNELS = {"mcp"}
 TERMINAL_PROPOSAL_ACTIONS = {
     "proposal_accepted": "accepted",
     "proposal_rejected": "rejected",
@@ -71,6 +79,28 @@ REASON_CODES = {
 
 class GovernanceError(RuntimeError):
     """A safe, user-correctable governed-memory failure."""
+
+
+@dataclass(frozen=True)
+class ProposalLimits:
+    """Durable Phase 5A queue limits supplied by the trusted server profile."""
+
+    max_request_bytes: int = 65_536
+    max_reference_count: int = 16
+    max_pending_per_project: int = 256
+    max_pending_records_root: int = 2_048
+    max_pending_bytes_per_project: int = 4 * 1024 * 1024
+    max_pending_bytes_root: int = 32 * 1024 * 1024
+
+    def validate(self) -> "ProposalLimits":
+        for field, value in self.__dict__.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise GovernanceError(f"{field} must be a positive integer.")
+        if self.max_reference_count > 256:
+            raise GovernanceError("max_reference_count cannot exceed 256.")
+        if self.max_request_bytes > 4 * 1024 * 1024:
+            raise GovernanceError("max_request_bytes cannot exceed 4 MiB.")
+        return self
 
 
 def utc_now() -> str:
@@ -191,12 +221,14 @@ def tombstone_path(root: Path, item_id: str) -> Path:
 
 def _load_json(path: Path, record_type: str) -> dict:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        value = parse_closed_json(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, CanonicalJSONError) as exc:
         raise GovernanceError(f"Invalid {record_type} JSON at {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise GovernanceError(f"{record_type} record must be a JSON object: {path}")
-    if value.get("format_version") != CANONICAL_FORMAT_VERSION:
+    allowed_versions = {1, 2} if record_type == "proposal" else {1}
+    format_version = value.get("format_version")
+    if type(format_version) is not int or format_version not in allowed_versions:
         raise GovernanceError(
             f"Unsupported canonical {record_type} format at {path}; mutation was refused."
         )
@@ -213,7 +245,57 @@ def _required(record: dict, fields: set[str], path: Path, record_type: str) -> N
         )
 
 
+def _require_string_fields(record: dict, fields: set[str], path: Path, record_type: str) -> None:
+    invalid = sorted(field for field in fields if not isinstance(record.get(field), str))
+    if invalid:
+        raise GovernanceError(
+            f"{record_type} fields must be JSON strings at {path}: {', '.join(invalid)}"
+        )
+
+
 def _validate_proposal_record(record: dict, path: Path) -> dict:
+    is_v2 = record.get("format_version") == PROPOSAL_FORMAT_VERSION
+    if is_v2:
+        allowed = {
+            "format_version", "record_type", "proposal_id", "project", "subject",
+            "predicate", "object", "proposed_at", "valid_from", "actor",
+            "requested_authority", "sensitivity", "evidence_ids", "source_refs",
+            "rationale", "submission_id", "payload_digest", "source_channel",
+        }
+        unknown = sorted(set(record) - allowed)
+        missing = sorted(allowed - set(record))
+        if unknown:
+            raise GovernanceError(
+                f"Proposal-v2 contains unknown fields at {path}: {', '.join(unknown)}"
+            )
+        if missing:
+            raise GovernanceError(
+                f"Proposal-v2 is missing fields at {path}: {', '.join(missing)}"
+            )
+        _require_string_fields(
+            record,
+            allowed - {"format_version", "evidence_ids", "source_refs"},
+            path,
+            "Proposal-v2",
+        )
+        if not isinstance(record["evidence_ids"], list) or not isinstance(record["source_refs"], list):
+            raise GovernanceError(f"Proposal-v2 evidence/source refs must be JSON arrays at {path}.")
+        if any(not isinstance(item, str) for item in (*record["evidence_ids"], *record["source_refs"])):
+            raise GovernanceError(f"Proposal-v2 evidence/source refs must contain only strings at {path}.")
+        if len(set(record["evidence_ids"])) != len(record["evidence_ids"]):
+            raise GovernanceError(f"Proposal-v2 contains duplicate evidence IDs at {path}.")
+        if len(set(record["source_refs"])) != len(record["source_refs"]):
+            raise GovernanceError(f"Proposal-v2 contains duplicate source refs at {path}.")
+        original = {
+            field: record[field]
+            for field in (
+                "proposal_id", "project", "subject", "predicate", "object", "proposed_at",
+                "valid_from", "actor", "rationale", "submission_id", "payload_digest",
+            )
+        }
+        original_evidence_ids = list(record["evidence_ids"])
+        original_source_refs = list(record["source_refs"])
+
     _required(record, {
         "proposal_id", "project", "subject", "predicate", "object", "proposed_at",
         "valid_from", "actor", "requested_authority", "sensitivity",
@@ -236,10 +318,48 @@ def _validate_proposal_record(record: dict, path: Path) -> dict:
     record["evidence_ids"] = _validate_evidence_ids(record.get("evidence_ids"))
     record["source_refs"] = _validate_source_refs(record.get("source_refs"))
     record["rationale"] = str(record.get("rationale") or "")[:4000]
+    if is_v2:
+        record["submission_id"] = validate_id(record["submission_id"], "submission")
+        record["payload_digest"] = _sha256(record["payload_digest"], "payload_digest")
+        if record["source_channel"] not in SOURCE_CHANNELS:
+            raise GovernanceError(f"Invalid proposal source_channel at {path}.")
+        if record["actor"] != "mcp:unverified" or record["requested_authority"] != "agent_proposal":
+            raise GovernanceError(f"Proposal-v2 has invalid server-stamped provenance at {path}.")
+        normalized = {field: record[field] for field in original}
+        if (
+            normalized != original
+            or record["evidence_ids"] != original_evidence_ids
+            or record["source_refs"] != original_source_refs
+        ):
+            raise GovernanceError(f"Proposal-v2 contains non-canonical field encodings at {path}.")
+        normalized_sources = []
+        for source_ref in record["source_refs"]:
+            match = SOURCE_REF_RE.fullmatch(source_ref)
+            assert match is not None
+            locator = source_ref[: source_ref.lower().rfind("@sha256:")]
+            normalized_sources.append(
+                _submission_source_uri(locator) + "@sha256:" + match.group(1).lower()
+            )
+        if record["source_refs"] != normalized_sources:
+            raise GovernanceError(f"Proposal-v2 source refs are not canonically normalized at {path}.")
+        canonical_sources = sorted(record["source_refs"], key=canonical_json_bytes)
+        if record["source_refs"] != canonical_sources:
+            raise GovernanceError(f"Proposal-v2 source refs are not in canonical order at {path}.")
     return record
 
 
 def _validate_evidence_record(record: dict, path: Path) -> dict:
+    string_fields = {
+        "evidence_id", "project", "kind", "source_uri", "captured_at",
+        "content_sha256", "sensitivity", "retention", "actor",
+    }
+    _require_string_fields(record, string_fields, path, "evidence")
+    if record.get("excerpt_sha256") is not None and not isinstance(record.get("excerpt_sha256"), str):
+        raise GovernanceError(f"evidence excerpt_sha256 must be a JSON string or null at {path}.")
+    original = {
+        field: record.get(field)
+        for field in string_fields | {"excerpt_sha256"}
+    }
     _required(record, {
         "evidence_id", "project", "kind", "source_uri", "captured_at",
         "content_sha256", "sensitivity", "retention", "actor",
@@ -259,6 +379,8 @@ def _validate_evidence_record(record: dict, path: Path) -> dict:
     if record["sensitivity"] not in SENSITIVITIES or record["retention"] != "reference_only":
         raise GovernanceError(f"Invalid evidence sensitivity/retention at {path}.")
     record["actor"] = _line(record["actor"], "actor", maximum=200)
+    if {field: record.get(field) for field in original} != original:
+        raise GovernanceError(f"Evidence contains non-canonical field encodings at {path}.")
     return record
 
 
@@ -306,6 +428,14 @@ def _validate_tombstone_record(record: dict, path: Path) -> dict:
     record["actor"] = _line(record["actor"], "actor", maximum=200)
     record["reason_code"] = _assert_reason(record["reason_code"])
     record["prior_sha256"] = _sha256(record["prior_sha256"], "prior_sha256")
+    replay_key = record.get("submission_replay_key")
+    if replay_key is not None:
+        if record["item_type"] != "proposal":
+            raise GovernanceError(f"Only proposal tombstones may retain a submission replay key at {path}.")
+        record["submission_replay_key"] = _sha256(
+            replay_key,
+            "submission_replay_key",
+        )
     return record
 
 
@@ -460,6 +590,550 @@ def create_proposal(
     path = proposal_path(root, project, proposal_id)
     _atomic_new(path, _json_bytes(record))
     return {**record, "path": _relative(root, path), "status": "pending"}
+
+
+ROOT_IDENTITY_RELATIVE = "00_registry/ELM_ROOT_ID.json"
+SUBMISSION_FIELDS = {
+    "submission_id",
+    "project",
+    "subject",
+    "predicate",
+    "object",
+    "valid_from",
+    "sensitivity",
+    "rationale",
+    "source_refs",
+    "evidence",
+}
+EVIDENCE_DESCRIPTOR_FIELDS = {
+    "kind",
+    "source_uri",
+    "content_sha256",
+    "excerpt_sha256",
+    "sensitivity",
+}
+
+
+def root_identity_path(root: Path) -> Path:
+    return _target(root, ROOT_IDENTITY_RELATIVE)
+
+
+def _validate_root_identity(record: dict, path: Path) -> dict:
+    allowed = {"format_version", "record_type", "root_id", "created_at", "creator"}
+    unknown = sorted(set(record) - allowed)
+    missing = sorted(allowed - set(record))
+    if unknown or missing:
+        detail = "unknown=" + ",".join(unknown) if unknown else "missing=" + ",".join(missing)
+        raise GovernanceError(f"root_identity has an invalid closed schema at {path}: {detail}")
+    _require_string_fields(record, {"root_id", "created_at", "creator"}, path, "root_identity")
+    _required(record, {"root_id", "created_at", "creator"}, path, "root_identity")
+    record["root_id"] = validate_id(record["root_id"], "root")
+    record["created_at"] = _parse_time(record["created_at"], "created_at")
+    record["creator"] = _line(record["creator"], "creator", maximum=200)
+    return record
+
+
+def load_root_identity(root: Path, *, required: bool = False) -> dict | None:
+    path = root_identity_path(root)
+    if not path.is_file():
+        if required:
+            raise GovernanceError(
+                "ELM root identity is missing. Run `elm root-id init --dry-run`, then "
+                "`elm root-id init --apply --creator <label>` outside MCP."
+            )
+        return None
+    record = _validate_root_identity(_load_json(path, "root_identity"), path)
+    return {**record, "path": ROOT_IDENTITY_RELATIVE}
+
+
+def bootstrap_root_identity(
+    root: Path,
+    *,
+    apply: bool,
+    creator: str,
+    lock_timeout: float,
+    recover_stale: bool,
+) -> dict:
+    """Preview or create the immutable portable root identity."""
+    existing = load_root_identity(root)
+    if existing:
+        return {"mode": "apply" if apply else "dry-run", "created": False, **existing}
+    if not apply:
+        return {
+            "mode": "dry-run",
+            "created": False,
+            "would_create": ROOT_IDENTITY_RELATIVE,
+            "record_type": "root_identity",
+            "format_version": 1,
+        }
+    actor = _line(creator, "creator", maximum=200)
+    with WriterLock(
+        root,
+        "root-identity-init",
+        timeout=lock_timeout,
+        recover_stale=recover_stale,
+    ):
+        _refuse_pending_transactions(root)
+        existing = load_root_identity(root)
+        if existing:
+            return {"mode": "apply", "created": False, **existing}
+        record = {
+            "format_version": 1,
+            "record_type": "root_identity",
+            "root_id": new_id("root"),
+            "created_at": utc_now(),
+            "creator": actor,
+        }
+        transaction_id = new_id("transaction")
+        backup_path = (
+            root
+            / "backups"
+            / "elm-root-identity"
+            / transaction_id
+            / "ELM_ROOT_ID.json"
+        )
+        payload = _json_bytes(record)
+        transaction = apply_transaction(
+            root,
+            transaction_id=transaction_id,
+            operation="root-identity-init",
+            actor=actor,
+            changes=[
+                FileChange(root_identity_path(root), payload),
+                FileChange(backup_path, payload),
+            ],
+        )
+    return {
+        "mode": "apply",
+        "created": True,
+        **record,
+        "path": ROOT_IDENTITY_RELATIVE,
+        "backup": _relative(root, backup_path),
+        **transaction,
+    }
+
+
+def _closed_object(
+    value: object,
+    expected: set[str],
+    field: str,
+    *,
+    optional: set[str] | None = None,
+) -> dict:
+    if not isinstance(value, dict):
+        raise GovernanceError(f"{field} must be a JSON object.")
+    unknown = sorted(set(value) - expected)
+    missing = sorted((expected - (optional or set())) - set(value))
+    if unknown:
+        raise GovernanceError(f"{field} contains unknown fields: {', '.join(unknown)}")
+    if missing:
+        raise GovernanceError(f"{field} is missing fields: {', '.join(missing)}")
+    return value
+
+
+def _submission_source_uri(value: object) -> str:
+    if not isinstance(value, str):
+        raise GovernanceError("source_uri must be a JSON string.")
+    source_uri = _line(value, "source_uri", maximum=2000)
+    if not source_uri.startswith(("repo://", "elm://", "https://", "http://", "urn:")):
+        raise GovernanceError("source_uri must use repo://, elm://, http(s)://, or urn:.")
+    parsed = urlsplit(source_uri)
+    if parsed.username is not None or parsed.password is not None:
+        raise GovernanceError("source_uri must not contain embedded credentials.")
+    if parsed.query:
+        raise GovernanceError("source_uri query strings are not accepted by proposal-only MCP.")
+    return source_uri
+
+
+def normalize_proposal_submission(request: dict) -> tuple[str, dict, list[dict]]:
+    """Validate and normalize the closed Phase 5A submission payload."""
+    value = _closed_object(request, SUBMISSION_FIELDS, "proposal submission")
+    string_fields = SUBMISSION_FIELDS - {"source_refs", "evidence"}
+    invalid = sorted(field for field in string_fields if not isinstance(value.get(field), str))
+    if invalid:
+        raise GovernanceError(
+            "proposal submission fields must be JSON strings: " + ", ".join(invalid)
+        )
+    submission_id = validate_id(value["submission_id"], "submission")
+    project = _project(value["project"])
+    sensitivity = value["sensitivity"]
+    if sensitivity not in SENSITIVITIES:
+        raise GovernanceError(f"sensitivity must be one of: {', '.join(sorted(SENSITIVITIES))}.")
+    source_values = value["source_refs"]
+    evidence_values = value["evidence"]
+    if not isinstance(source_values, list) or not isinstance(evidence_values, list):
+        raise GovernanceError("source_refs and evidence must be JSON arrays.")
+    normalized_sources = []
+    for ordinal, source_value in enumerate(source_values):
+        if not isinstance(source_value, str):
+            raise GovernanceError(f"source_refs[{ordinal}] must be a JSON string.")
+        candidate = _line(source_value, f"source_refs[{ordinal}]", maximum=2000)
+        match = SOURCE_REF_RE.fullmatch(candidate)
+        if not match:
+            raise GovernanceError(
+                "source_ref must end with @sha256:<64-hex-digest>."
+            )
+        locator = candidate[: candidate.lower().rfind("@sha256:")]
+        normalized_sources.append(
+            _submission_source_uri(locator) + "@sha256:" + match.group(1).lower()
+        )
+    normalized_sources.sort(key=canonical_json_bytes)
+    if len(set(normalized_sources)) != len(normalized_sources):
+        raise GovernanceError("Duplicate normalized source_refs are not allowed.")
+
+    normalized_evidence: list[dict] = []
+    descriptor_keys: set[bytes] = set()
+    for ordinal, descriptor_value in enumerate(evidence_values):
+        descriptor = _closed_object(
+            descriptor_value,
+            EVIDENCE_DESCRIPTOR_FIELDS,
+            f"evidence[{ordinal}]",
+            optional={"excerpt_sha256"},
+        )
+        required_strings = {"kind", "source_uri", "content_sha256", "sensitivity"}
+        invalid = sorted(field for field in required_strings if not isinstance(descriptor.get(field), str))
+        if invalid:
+            raise GovernanceError(
+                f"evidence[{ordinal}] fields must be JSON strings: {', '.join(invalid)}"
+            )
+        excerpt = descriptor.get("excerpt_sha256")
+        if excerpt is not None and not isinstance(excerpt, str):
+            raise GovernanceError(f"evidence[{ordinal}].excerpt_sha256 must be a JSON string or null.")
+        kind = descriptor["kind"]
+        if kind not in EVIDENCE_KINDS:
+            raise GovernanceError(f"evidence[{ordinal}].kind is invalid.")
+        descriptor_sensitivity = descriptor["sensitivity"]
+        if descriptor_sensitivity not in SENSITIVITIES:
+            raise GovernanceError(f"evidence[{ordinal}].sensitivity is invalid.")
+        normalized = {
+            "kind": kind,
+            "source_uri": _submission_source_uri(descriptor["source_uri"]),
+            "content_sha256": _sha256(
+                descriptor["content_sha256"], "content_sha256"
+            ),
+            "excerpt_sha256": _sha256(
+                descriptor.get("excerpt_sha256"), "excerpt_sha256", optional=True
+            ),
+            "sensitivity": descriptor_sensitivity,
+        }
+        try:
+            key = canonical_json_bytes(normalized)
+        except CanonicalJSONError as exc:
+            raise GovernanceError(str(exc)) from exc
+        if key in descriptor_keys:
+            raise GovernanceError("Duplicate normalized evidence descriptors are not allowed.")
+        descriptor_keys.add(key)
+        normalized_evidence.append(normalized)
+    normalized_evidence.sort(key=canonical_json_bytes)
+
+    rationale = value["rationale"].replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(rationale) > 4000:
+        raise GovernanceError("rationale exceeds the 4000-character limit.")
+    payload = {
+        "project": project,
+        "subject": _line(value["subject"], "subject"),
+        "predicate": _line(value["predicate"], "predicate"),
+        "object": _line(value["object"], "object"),
+        "valid_from": _parse_time(value["valid_from"], "valid_from"),
+        "sensitivity": sensitivity,
+        "rationale": rationale,
+        "requested_authority": "agent_proposal",
+        "source_refs": normalized_sources,
+        "evidence": normalized_evidence,
+    }
+    try:
+        payload_digest = hashlib.sha256(
+            SUBMISSION_DIGEST_DOMAIN + canonical_json_bytes(payload)
+        ).hexdigest()
+    except CanonicalJSONError as exc:
+        raise GovernanceError(str(exc)) from exc
+    return submission_id, payload, normalized_evidence
+
+
+def submission_replay_key(project: str, submission_id: str) -> str:
+    identity = {
+        "project": _project(project),
+        "submission_id": validate_id(submission_id, "submission"),
+    }
+    return hashlib.sha256(
+        SUBMISSION_RETIREMENT_DOMAIN + canonical_json_bytes(identity)
+    ).hexdigest()
+
+
+def _assert_allowed_project(root: Path, project: str, allowed_projects: set[str]) -> None:
+    normalized_allowed = {_project(item) for item in allowed_projects}
+    if project not in normalized_allowed:
+        raise GovernanceError("project is not enabled by this proposal-only server.")
+    target = root / "20_projects" / project
+    _relative(root, target)
+    if target.is_symlink() or not target.is_dir():
+        raise GovernanceError("project must name an existing non-symlink ELM project directory.")
+
+
+def validate_allowed_projects(root: Path, projects: set[str]) -> frozenset[str]:
+    if not projects:
+        raise GovernanceError("proposal-only mode requires at least one --allow-project value.")
+    if any(not isinstance(project, str) for project in projects):
+        raise GovernanceError("proposal-only project allowlist values must be strings.")
+    normalized = frozenset(_project(item) for item in projects)
+    for project in normalized:
+        _assert_allowed_project(root, project, set(normalized))
+    return normalized
+
+
+def _pending_usage(
+    root: Path,
+    proposals: dict[str, dict],
+    evidence: dict[str, dict],
+    statuses: dict[str, str],
+) -> tuple[dict[str, tuple[int, int]], tuple[int, int]]:
+    projects: dict[str, tuple[int, int]] = {}
+    root_paths: set[str] = set()
+    for proposal_id, proposal in proposals.items():
+        if statuses.get(proposal_id) != "pending":
+            continue
+        paths = {proposal["path"]}
+        for evidence_id in proposal.get("evidence_ids", []):
+            record = evidence.get(evidence_id)
+            if record:
+                paths.add(record["path"])
+        byte_count = sum((root / path).stat().st_size for path in paths)
+        count, total = projects.get(proposal["project"], (0, 0))
+        projects[proposal["project"]] = (count + 1, total + byte_count)
+        root_paths.update(paths)
+    root_bytes = sum((root / path).stat().st_size for path in root_paths)
+    return projects, (len(root_paths), root_bytes)
+
+
+def _verify_v2_proposal_digest(
+    proposal: dict,
+    evidence: dict[str, dict],
+    tombstones: dict[str, dict],
+    status: str,
+) -> bool:
+    """Verify a proposal-v2 digest, or explicitly allow terminal redacted evidence."""
+    descriptors: list[dict] = []
+    descriptor_keys: set[bytes] = set()
+    has_tombstoned_evidence = False
+    for evidence_id in proposal["evidence_ids"]:
+        record = evidence.get(evidence_id)
+        if record is None:
+            tombstone = tombstones.get(evidence_id)
+            if not tombstone or tombstone.get("item_type") != "evidence":
+                raise GovernanceError(
+                    f"Proposal-v2 references missing evidence without a tombstone: {evidence_id}"
+                )
+            if status == "pending":
+                raise GovernanceError(
+                    f"Pending proposal-v2 references tombstoned evidence: {evidence_id}"
+                )
+            has_tombstoned_evidence = True
+            continue
+        if record["project"] != proposal["project"]:
+            raise GovernanceError(f"Proposal-v2 evidence belongs to another project: {evidence_id}")
+        if record["actor"] != "mcp:unverified":
+            raise GovernanceError(f"Proposal-v2 evidence has invalid provenance: {evidence_id}")
+        descriptor = {
+            "kind": record["kind"],
+            "source_uri": _submission_source_uri(record["source_uri"]),
+            "content_sha256": record["content_sha256"],
+            "excerpt_sha256": record.get("excerpt_sha256"),
+            "sensitivity": record["sensitivity"],
+        }
+        key = canonical_json_bytes(descriptor)
+        if key in descriptor_keys:
+            raise GovernanceError("Proposal-v2 resolves to duplicate evidence descriptors.")
+        descriptor_keys.add(key)
+        descriptors.append(descriptor)
+    if descriptors != sorted(descriptors, key=canonical_json_bytes):
+        raise GovernanceError("Proposal-v2 evidence descriptors are not in canonical order.")
+    if has_tombstoned_evidence:
+        return False
+    payload = {
+        "project": proposal["project"],
+        "subject": proposal["subject"],
+        "predicate": proposal["predicate"],
+        "object": proposal["object"],
+        "valid_from": proposal["valid_from"],
+        "sensitivity": proposal["sensitivity"],
+        "rationale": proposal["rationale"],
+        "requested_authority": "agent_proposal",
+        "source_refs": proposal["source_refs"],
+        "evidence": descriptors,
+    }
+    digest = hashlib.sha256(
+        SUBMISSION_DIGEST_DOMAIN + canonical_json_bytes(payload)
+    ).hexdigest()
+    if digest != proposal["payload_digest"]:
+        raise GovernanceError(
+            f"Proposal-v2 payload digest mismatch: {proposal['proposal_id']}"
+        )
+    return True
+
+
+def submit_proposal_bundle(
+    root: Path,
+    *,
+    request: dict,
+    request_bytes: int,
+    allowed_projects: set[str],
+    limits: ProposalLimits,
+    lock_timeout: float,
+    recover_stale: bool,
+) -> dict:
+    """Atomically create Phase 5A evidence metadata and one proposal-v2 record."""
+    limits.validate()
+    if type(request_bytes) is not int or request_bytes < 1 or request_bytes > limits.max_request_bytes:
+        raise GovernanceError(
+            f"proposal request exceeds the {limits.max_request_bytes}-byte limit."
+        )
+    submission_id, payload, descriptors = normalize_proposal_submission(request)
+    if len(payload["source_refs"]) + len(descriptors) > limits.max_reference_count:
+        raise GovernanceError(
+            f"proposal references exceed the {limits.max_reference_count}-item limit."
+        )
+    project = payload["project"]
+    load_root_identity(root, required=True)
+    _assert_allowed_project(root, project, allowed_projects)
+    payload_digest = hashlib.sha256(
+        SUBMISSION_DIGEST_DOMAIN + canonical_json_bytes(payload)
+    ).hexdigest()
+
+    with WriterLock(
+        root,
+        "proposal-submit",
+        timeout=lock_timeout,
+        recover_stale=recover_stale,
+    ):
+        _refuse_pending_transactions(root)
+        proposals, evidence, events, tombstones = load_governance(root)
+        statuses = proposal_statuses(proposals, events, tombstones)
+        replay_key = submission_replay_key(project, submission_id)
+        if any(
+            item.get("submission_replay_key") == replay_key
+            for item in tombstones.values()
+        ):
+            raise GovernanceError(
+                "submission_id was retired by explicit proposal deletion and cannot be reused."
+            )
+        matches = [
+            item for item in proposals.values()
+            if item.get("format_version") == PROPOSAL_FORMAT_VERSION
+            and item.get("project") == project
+            and item.get("submission_id") == submission_id
+        ]
+        if len(matches) > 1:
+            raise GovernanceError("Canonical submission identity is duplicated; mutation refused.")
+        if matches:
+            prior = matches[0]
+            if prior.get("_payload_digest_verified") is not True:
+                raise GovernanceError(
+                    "submission_id cannot be replayed because tombstoned evidence prevents digest verification."
+                )
+            if prior.get("payload_digest") != payload_digest:
+                raise GovernanceError(
+                    "submission_id was already used with a different normalized payload."
+                )
+            return {
+                **{key: value for key, value in prior.items() if not key.startswith("_")},
+                "status": statuses[prior["proposal_id"]],
+                "idempotent_replay": True,
+                "canonical_committed": True,
+                "candidate_untrusted": True,
+                "authority_warning": "Proposal text is untrusted candidate data, not accepted memory.",
+            }
+
+        now = utc_now()
+        evidence_records: list[tuple[dict, Path, bytes]] = []
+        for descriptor in descriptors:
+            evidence_id = new_id("evidence")
+            record = {
+                "format_version": 1,
+                "record_type": "evidence",
+                "evidence_id": evidence_id,
+                "project": project,
+                "kind": descriptor["kind"],
+                "source_uri": descriptor["source_uri"],
+                "captured_at": now,
+                "content_sha256": descriptor["content_sha256"],
+                "excerpt_sha256": descriptor["excerpt_sha256"],
+                "sensitivity": descriptor["sensitivity"],
+                "retention": "reference_only",
+                "actor": "mcp:unverified",
+            }
+            path = evidence_path(root, evidence_id)
+            evidence_records.append((record, path, _json_bytes(record)))
+
+        proposal_id = new_id("proposal")
+        proposal = {
+            "format_version": PROPOSAL_FORMAT_VERSION,
+            "record_type": "proposal",
+            "proposal_id": proposal_id,
+            "project": project,
+            "subject": payload["subject"],
+            "predicate": payload["predicate"],
+            "object": payload["object"],
+            "proposed_at": now,
+            "valid_from": payload["valid_from"],
+            "actor": "mcp:unverified",
+            "requested_authority": "agent_proposal",
+            "sensitivity": payload["sensitivity"],
+            "evidence_ids": [item[0]["evidence_id"] for item in evidence_records],
+            "source_refs": payload["source_refs"],
+            "rationale": payload["rationale"],
+            "submission_id": submission_id,
+            "payload_digest": payload_digest,
+            "source_channel": "mcp",
+        }
+        proposal_target = proposal_path(root, project, proposal_id)
+        proposal_bytes = _json_bytes(proposal)
+        validated_evidence: dict[str, dict] = {}
+        for evidence_record, evidence_target, _ in evidence_records:
+            validated = _validate_evidence_record(dict(evidence_record), evidence_target)
+            validated_evidence[validated["evidence_id"]] = validated
+        validated_proposal = _validate_proposal_record(dict(proposal), proposal_target)
+        if not _verify_v2_proposal_digest(
+            validated_proposal,
+            validated_evidence,
+            {},
+            "pending",
+        ):
+            raise GovernanceError("Generated proposal-v2 bundle failed digest verification.")
+        new_bytes = len(proposal_bytes) + sum(len(item[2]) for item in evidence_records)
+        new_records = 1 + len(evidence_records)
+        project_usage, root_usage = _pending_usage(root, proposals, evidence, statuses)
+        project_count, project_bytes = project_usage.get(project, (0, 0))
+        root_records, root_bytes = root_usage
+        checks = (
+            (project_count + 1, limits.max_pending_per_project, "project pending proposal quota"),
+            (project_bytes + new_bytes, limits.max_pending_bytes_per_project, "project pending byte quota"),
+            (root_records + new_records, limits.max_pending_records_root, "root pending record quota"),
+            (root_bytes + new_bytes, limits.max_pending_bytes_root, "root pending byte quota"),
+        )
+        for actual, maximum, label in checks:
+            if actual > maximum:
+                raise GovernanceError(f"{label} exceeded ({actual} > {maximum}).")
+
+        transaction = apply_transaction(
+            root,
+            transaction_id=new_id("transaction"),
+            operation="proposal-submit",
+            actor="mcp:unverified",
+            changes=[
+                *(FileChange(path, data) for _, path, data in evidence_records),
+                FileChange(proposal_target, proposal_bytes),
+            ],
+        )
+    return {
+        **proposal,
+        "path": _relative(root, proposal_target),
+        "status": "pending",
+        "idempotent_replay": False,
+        "canonical_committed": True,
+        "candidate_untrusted": True,
+        "authority_warning": "Proposal text is untrusted candidate data, not accepted memory.",
+        **transaction,
+    }
 
 
 def _metadata_lines(record: dict) -> list[str]:
@@ -843,6 +1517,23 @@ def load_governance(root: Path) -> tuple[dict[str, dict], dict[str, dict], dict[
         if item_id in tombstones:
             raise GovernanceError(f"Duplicate tombstone item ID: {item_id}")
         tombstones[item_id] = record
+    statuses = proposal_statuses(proposals, events, tombstones)
+    submission_keys: set[tuple[str, str]] = set()
+    for proposal in proposals.values():
+        if proposal.get("format_version") != PROPOSAL_FORMAT_VERSION:
+            continue
+        key = (proposal["project"], proposal["submission_id"])
+        if key in submission_keys:
+            raise GovernanceError(
+                f"Duplicate proposal submission identity: {proposal['project']}/{proposal['submission_id']}"
+            )
+        submission_keys.add(key)
+        proposal["_payload_digest_verified"] = _verify_v2_proposal_digest(
+            proposal,
+            evidence,
+            tombstones,
+            statuses[proposal["proposal_id"]],
+        )
     return proposals, evidence, events, tombstones
 
 
@@ -882,6 +1573,109 @@ def _load_claims(root: Path) -> dict[str, dict]:
             raise GovernanceError(f"Duplicate claim ID: {record['claim_id']}")
         claims[record["claim_id"]] = record
     return claims
+
+
+def _redacted_locator(value: str) -> str:
+    parsed = urlsplit(value)
+    if not parsed.query:
+        return value
+    keys = sorted({item.split("=", 1)[0] for item in parsed.query.split("&") if item})
+    query = "&".join(f"{key}=<redacted>" for key in keys)
+    return parsed._replace(query=query).geturl()
+
+
+def _redacted_source_ref(value: str) -> str:
+    marker = "@sha256:"
+    index = value.lower().rfind(marker)
+    if index < 0:
+        return "<invalid-source-ref>"
+    return _redacted_locator(value[:index]) + value[index:]
+
+
+def preview_proposal_transition(
+    root: Path,
+    *,
+    proposal_id: str,
+    project: str,
+    allowed_projects: set[str] | None = None,
+) -> dict:
+    """Build the Phase 5A non-signable acceptance review plan."""
+    root_identity = load_root_identity(root, required=True)
+    normalized_project = _project(project)
+    if allowed_projects is not None:
+        _assert_allowed_project(root, normalized_project, allowed_projects)
+    _refuse_pending_transactions(root)
+    proposals, evidence, events, tombstones = load_governance(root)
+    normalized_id = validate_id(proposal_id, "proposal")
+    proposal = proposals.get(normalized_id)
+    if proposal is None or proposal.get("project") != normalized_project:
+        raise GovernanceError("Proposal does not exist in the requested project.")
+    statuses = proposal_statuses(proposals, events, tombstones)
+    claims = _load_claims(root)
+    current = sorted(
+        (
+            {
+                "claim_id": item["claim_id"],
+                "object": item["object"],
+                "status": item["status"],
+                "content_sha256": item["content_sha256"],
+                "path": item["path"],
+            }
+            for item in claims.values()
+            if item["project"] == normalized_project
+            and item["subject"] == proposal["subject"]
+            and item["predicate"] == proposal["predicate"]
+            and item["status"] == "accepted"
+        ),
+        key=lambda item: item["claim_id"],
+    )
+    locators = []
+    for evidence_id in proposal.get("evidence_ids", []):
+        record = evidence.get(evidence_id)
+        if record:
+            locators.append({
+                "evidence_id": evidence_id,
+                "kind": record["kind"],
+                "source_uri": _redacted_locator(record["source_uri"]),
+                "content_sha256": record["content_sha256"],
+                "excerpt_sha256": record.get("excerpt_sha256"),
+                "retention": "reference_only",
+            })
+    proposal_hash = _hash_bytes((root / proposal["path"]).read_bytes())
+    return {
+        "review_plan": {
+            "format_version": 1,
+            "signable": False,
+            "action": "accept",
+            "root_id": root_identity["root_id"],
+            "project": normalized_project,
+            "proposal_id": normalized_id,
+            "proposal_status": statuses[normalized_id],
+            "proposal_sha256": proposal_hash,
+            "candidate": {
+                "subject": proposal["subject"],
+                "predicate": proposal["predicate"],
+                "object": proposal["object"],
+                "valid_from": proposal["valid_from"],
+                "sensitivity": proposal["sensitivity"],
+                "rationale": proposal.get("rationale", ""),
+                "requested_authority": proposal["requested_authority"],
+            },
+            "evidence_locators": locators,
+            "source_refs": [
+                _redacted_source_ref(value) for value in proposal.get("source_refs", [])
+            ],
+            "before": {"accepted_claims": current},
+            "after": {
+                "effect": "would_create_an_accepted_claim_only_after_separate_ratification",
+                "candidate_object": proposal["object"],
+            },
+        },
+        "candidate_untrusted": True,
+        "authority_warning": (
+            "This preview is not an approval grant and cannot authorize accepted-state mutation."
+        ),
+    }
 
 
 def _event_record(
@@ -1238,7 +2032,8 @@ def delete_item(
     item_id = validate_id(item_id, kind)
     with WriterLock(root, f"{kind}-delete", timeout=lock_timeout, recover_stale=recover_stale):
         _refuse_pending_transactions(root)
-        proposals, evidence, _, _ = load_governance(root)
+        proposals, evidence, events, tombstones = load_governance(root)
+        statuses = proposal_statuses(proposals, events, tombstones)
         claims = _load_claims(root)
         if kind == "claim":
             record = _find_claim(claims, item_id)
@@ -1249,6 +2044,17 @@ def delete_item(
                 record = evidence[item_id]
             except KeyError as exc:
                 raise GovernanceError(f"Evidence not found: {item_id}") from exc
+            pending_references = sorted(
+                proposal_id
+                for proposal_id, proposal in proposals.items()
+                if item_id in proposal.get("evidence_ids", [])
+                and statuses.get(proposal_id) == "pending"
+            )
+            if pending_references:
+                raise GovernanceError(
+                    "Evidence referenced by a pending proposal cannot be deleted: "
+                    + ", ".join(pending_references)
+                )
         target = root / record["path"]
         prior_hash = _hash_bytes(target.read_bytes())
         transaction_id = new_id("transaction")
@@ -1266,6 +2072,11 @@ def delete_item(
             "reason_code": _assert_reason(reason_code),
             "prior_sha256": prior_hash,
         }
+        if kind == "proposal" and record.get("format_version") == PROPOSAL_FORMAT_VERSION:
+            tombstone["submission_replay_key"] = submission_replay_key(
+                record["project"],
+                record["submission_id"],
+            )
         event, relative = _event_record(
             action="item_deleted",
             actor=actor,
@@ -1415,6 +2226,27 @@ def history_view(
     }
 
 
+def governance_projection_digest(root: Path) -> str:
+    """Hash canonical governed records so read-only status can detect stale projection."""
+    entries: list[bytes] = []
+    patterns = (
+        ("01_inbox/elm_proposals", "proposal_*.json"),
+        ("40_sources/elm_evidence/metadata", "evidence_*.json"),
+        ("30_agent_logs/elm_events", "event_*.json"),
+        ("30_agent_logs/elm_tombstones", "*.json"),
+    )
+    for relative, pattern in patterns:
+        for path in _iter_json(root, relative, pattern):
+            path_bytes = _relative(root, path).encode("utf-8")
+            entries.append(path_bytes + b"\x00" + _hash_bytes(path.read_bytes()).encode("ascii"))
+    projects = root / "20_projects"
+    if projects.is_dir():
+        for path in sorted(projects.glob("*/CLAIMS/claim_*.md")):
+            path_bytes = _relative(root, path).encode("utf-8")
+            entries.append(path_bytes + b"\x00" + _hash_bytes(path.read_bytes()).encode("ascii"))
+    return hashlib.sha256(b"\n".join(sorted(entries))).hexdigest()
+
+
 def sync_governance_projection(con: sqlite3.Connection, root: Path) -> dict:
     pending = _iter_json(root, "01_inbox/elm_transactions", "transaction_*.json")
     if pending:
@@ -1430,15 +2262,17 @@ def sync_governance_projection(con: sqlite3.Connection, root: Path) -> dict:
         for proposal_id, record in proposals.items():
             con.execute(
                 """INSERT INTO governance_proposals(
-                       proposal_id,path,project,subject,predicate,object,status,proposed_at,valid_from,
-                       actor,requested_authority,sensitivity,evidence_ids_json,source_refs_json,content_hash
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       proposal_id,path,format_version,project,subject,predicate,object,status,proposed_at,valid_from,
+                       actor,requested_authority,sensitivity,evidence_ids_json,source_refs_json,
+                       submission_id,payload_digest,source_channel,content_hash
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    proposal_id, record["path"], record["project"], record["subject"], record["predicate"],
+                    proposal_id, record["path"], record["format_version"], record["project"], record["subject"], record["predicate"],
                     record["object"], statuses[proposal_id], record["proposed_at"], record["valid_from"],
                     record["actor"], record["requested_authority"], record["sensitivity"],
                     json.dumps(record.get("evidence_ids", []), ensure_ascii=False),
                     json.dumps(record.get("source_refs", []), ensure_ascii=False),
+                    record.get("submission_id"), record.get("payload_digest"), record.get("source_channel"),
                     _hash_bytes((root / record["path"]).read_bytes()),
                 ),
             )
@@ -1498,6 +2332,10 @@ def sync_governance_projection(con: sqlite3.Connection, root: Path) -> dict:
                     record["deleted_at"], record["actor"], record["reason_code"], record["prior_sha256"],
                 ),
             )
+        con.execute(
+            "INSERT OR REPLACE INTO elm_meta(key,value) VALUES('governance_projection_sha256',?)",
+            (governance_projection_digest(root),),
+        )
     return {
         "proposals": len(proposals),
         "evidence": len(evidence),

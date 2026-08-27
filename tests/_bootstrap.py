@@ -48,3 +48,19 @@ def run_cli_process(root: Path, *arguments: str) -> subprocess.CompletedProcess[
         encoding="utf-8",
     )
     return completed
+
+
+def run_cli_stdin(root: Path, stdin_text: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(SOURCE_ROOT) if not existing else os.pathsep.join((str(SOURCE_ROOT), existing))
+    return subprocess.run(
+        [sys.executable, "-m", "elm_memory.cli", *arguments, "--root", str(root), "--json"],
+        cwd=REPOSITORY_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        input=stdin_text,
+        encoding="utf-8",
+    )

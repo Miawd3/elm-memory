@@ -72,3 +72,6 @@ jobs:
 
       - name: Run read-only MCP equivalence demo
         run: python benchmarks/run_mcp_demo.py --assert-pass
+
+      - name: Run proposal-only MCP safety demo
+        run: python benchmarks/run_phase5a_demo.py --assert-pass

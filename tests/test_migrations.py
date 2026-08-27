@@ -188,7 +188,7 @@ class IndexMigrationTests(unittest.TestCase):
                     )
                 }
 
-        self.assertEqual(2, version)
+        self.assertEqual(3, version)
         self.assertIn("claims", tables)
         self.assertIn("governance_events", tables)
 
@@ -224,6 +224,61 @@ class IndexMigrationTests(unittest.TestCase):
 
         self.assertEqual(1, version)
         self.assertIsNone(partial)
+
+    def test_v2_proposal_projection_migrates_without_losing_v1_rows(self) -> None:
+        proposal_id = "proposal_11111111-1111-4111-8111-111111111111"
+        with tempfile.TemporaryDirectory(prefix="elm-v2-migrate-") as temporary:
+            root = Path(temporary)
+            with closing(connect(root)):
+                pass
+            with closing(sqlite3.connect(db_path(root))) as con:
+                con.execute("DROP INDEX idx_governance_proposals_submission")
+                con.execute("ALTER TABLE governance_proposals RENAME TO governance_proposals_v3")
+                con.execute(
+                    """CREATE TABLE governance_proposals (
+                        proposal_id TEXT PRIMARY KEY,path TEXT NOT NULL UNIQUE,project TEXT NOT NULL,
+                        subject TEXT NOT NULL,predicate TEXT NOT NULL,object TEXT NOT NULL,status TEXT NOT NULL,
+                        proposed_at TEXT NOT NULL,valid_from TEXT NOT NULL,actor TEXT NOT NULL,
+                        requested_authority TEXT NOT NULL,sensitivity TEXT NOT NULL,
+                        evidence_ids_json TEXT NOT NULL,source_refs_json TEXT NOT NULL,content_hash TEXT NOT NULL
+                    )"""
+                )
+                con.execute(
+                    """INSERT INTO governance_proposals VALUES(
+                        ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                    )""",
+                    (
+                        proposal_id,
+                        f"01_inbox/elm_proposals/orion/{proposal_id}.json",
+                        "orion",
+                        "Aurora",
+                        "uses",
+                        "LegacyDB",
+                        "pending",
+                        "2026-08-26T00:00:00+00:00",
+                        "2026-08-26T00:00:00+00:00",
+                        "agent:test",
+                        "agent_proposal",
+                        "normal",
+                        "[]",
+                        "[]",
+                        "a" * 64,
+                    ),
+                )
+                con.execute("DROP TABLE governance_proposals_v3")
+                con.execute("UPDATE elm_meta SET value='2' WHERE key='index_schema_version'")
+                con.commit()
+            with closing(connect(root)) as con:
+                version = schema_version(con)
+                row = con.execute(
+                    "SELECT format_version,submission_id,payload_digest,source_channel "
+                    "FROM governance_proposals WHERE proposal_id=?",
+                    (proposal_id,),
+                ).fetchone()
+
+        self.assertEqual(3, version)
+        self.assertEqual(1, row[0])
+        self.assertEqual((None, None, None), tuple(row[1:]))
 
 
 if __name__ == "__main__":

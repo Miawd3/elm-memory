@@ -11,7 +11,7 @@ from .identity import (
 )
 
 
-INDEX_SCHEMA_VERSION = 2
+INDEX_SCHEMA_VERSION = 3
 
 
 class UnsupportedSchemaError(RuntimeError):
@@ -142,6 +142,7 @@ def _create_latest(con: sqlite3.Connection) -> None:
         CREATE TABLE governance_proposals (
             proposal_id TEXT PRIMARY KEY,
             path TEXT NOT NULL UNIQUE,
+            format_version INTEGER NOT NULL,
             project TEXT NOT NULL,
             subject TEXT NOT NULL,
             predicate TEXT NOT NULL,
@@ -154,10 +155,16 @@ def _create_latest(con: sqlite3.Connection) -> None:
             sensitivity TEXT NOT NULL,
             evidence_ids_json TEXT NOT NULL,
             source_refs_json TEXT NOT NULL,
+            submission_id TEXT,
+            payload_digest TEXT,
+            source_channel TEXT,
             content_hash TEXT NOT NULL
         );
         CREATE INDEX idx_governance_proposals_project_status
             ON governance_proposals(project,status);
+        CREATE UNIQUE INDEX idx_governance_proposals_submission
+            ON governance_proposals(project,submission_id)
+            WHERE submission_id IS NOT NULL;
 
         CREATE TABLE governance_evidence (
             evidence_id TEXT PRIMARY KEY,
@@ -353,6 +360,24 @@ def _migrate_one_to_two(con: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_two_to_three(con: sqlite3.Connection) -> None:
+    con.execute("ALTER TABLE governance_proposals ADD COLUMN format_version INTEGER NOT NULL DEFAULT 1")
+    con.execute("ALTER TABLE governance_proposals ADD COLUMN submission_id TEXT")
+    con.execute("ALTER TABLE governance_proposals ADD COLUMN payload_digest TEXT")
+    con.execute("ALTER TABLE governance_proposals ADD COLUMN source_channel TEXT")
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_governance_proposals_project_status "
+        "ON governance_proposals(project,status)"
+    )
+    con.execute(
+        "CREATE UNIQUE INDEX idx_governance_proposals_submission "
+        "ON governance_proposals(project,submission_id) WHERE submission_id IS NOT NULL"
+    )
+    con.execute(
+        "INSERT OR REPLACE INTO elm_meta(key,value) VALUES('index_schema_version','3')"
+    )
+
+
 def ensure_schema(con: sqlite3.Connection) -> None:
     version = schema_version(con)
     if version is None:
@@ -374,6 +399,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             elif version == 1:
                 _migrate_one_to_two(con)
                 version = 2
+            elif version == 2:
+                _migrate_two_to_three(con)
+                version = 3
             else:
                 raise SchemaMigrationError(f"No migration path from index schema {version}.")
         con.commit()

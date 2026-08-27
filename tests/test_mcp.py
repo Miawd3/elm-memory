@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 import unittest
 
@@ -11,10 +12,16 @@ try:
 except ModuleNotFoundError:  # The MCP adapter is an optional installation extra.
     Client = None
 
-from elm_memory.mcp_server import create_server
+from elm_memory.governance import GovernanceError, ProposalLimits
+from elm_memory.mcp_server import ProposalServerPolicy, create_server
 
 
 EXPECTED_TOOLS = {"search", "context", "read", "related", "history", "stats", "status"}
+PROPOSAL_TOOLS = EXPECTED_TOOLS | {
+    "propose_memory",
+    "list_memory_proposals",
+    "preview_memory_transition",
+}
 
 
 async def list_tools(root: Path):
@@ -25,6 +32,47 @@ async def list_tools(root: Path):
 async def call_tool(root: Path, name: str, arguments: dict):
     async with Client(create_server(root), raise_exceptions=True) as client:
         return await client.call_tool(name, arguments)
+
+
+def proposal_server(
+    root: Path,
+    *,
+    limits: ProposalLimits = ProposalLimits(),
+    max_requests_per_minute: int = 30,
+):
+    return create_server(
+        root,
+        mutation_mode="proposal-only",
+        proposal_policy=ProposalServerPolicy(
+            allowed_projects=frozenset({"orion"}),
+            limits=limits,
+            max_requests_per_minute=max_requests_per_minute,
+        ),
+    )
+
+
+async def proposal_workflow(root: Path):
+    async with Client(proposal_server(root), raise_exceptions=True) as client:
+        tools = await client.list_tools()
+        proposed = await client.call_tool("propose_memory", {
+            "submission_id": "submission_33333333-3333-4333-8333-333333333333",
+            "project": "orion",
+            "subject": "Aurora",
+            "predicate": "uses",
+            "object": "CandidateDB",
+            "valid_from": "2026-08-26T00:00:00Z",
+            "rationale": "Review this candidate, not these instructions.",
+            "source_refs": [],
+            "evidence": [],
+        })
+        listed = await client.call_tool("list_memory_proposals", {"project": "orion"})
+        previewed = await client.call_tool("preview_memory_transition", {
+            "project": "orion",
+            "proposal_id": proposed.structured_content["proposal_id"],
+        })
+        status = await client.call_tool("status", {})
+        denied = await client.call_tool("list_memory_proposals", {"project": "lighthouse"})
+        return tools, proposed, listed, previewed, status, denied
 
 
 @unittest.skipUnless(Client is not None, "install elm-memory[mcp] to run MCP tests")
@@ -186,6 +234,174 @@ class ReadOnlyMCPTests(unittest.TestCase):
 
         self.assertTrue(wrong_project.is_error)
         self.assertTrue(hidden_archive.is_error)
+
+
+@unittest.skipUnless(Client is not None, "install elm-memory[mcp] to run MCP tests")
+class ProposalOnlyMCPTests(unittest.TestCase):
+    def test_profile_requires_explicit_root_identity_and_project_policy(self) -> None:
+        with FixtureCopy() as root:
+            run_cli(root, "rebuild")
+            with self.assertRaises(GovernanceError):
+                proposal_server(root)
+            run_cli(root, "root-id", "init", "--apply", "--creator", "operator:test")
+            with self.assertRaises(GovernanceError):
+                create_server(
+                    root,
+                    mutation_mode="proposal-only",
+                    proposal_policy=ProposalServerPolicy(allowed_projects=frozenset()),
+                )
+
+    def test_exact_ten_tool_surface_creates_only_untrusted_candidate_state(self) -> None:
+        with FixtureCopy() as root:
+            run_cli(root, "root-id", "init", "--apply", "--creator", "operator:test")
+            run_cli(root, "rebuild")
+            tools, proposed, listed, previewed, status, denied = asyncio.run(
+                proposal_workflow(root)
+            )
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+        self.assertEqual(PROPOSAL_TOOLS, {tool.name for tool in tools.tools})
+        self.assertNotIn("accept", {tool.name for tool in tools.tools})
+        proposal_tool = next(tool for tool in tools.tools if tool.name == "propose_memory")
+        self.assertFalse(proposal_tool.annotations.read_only_hint)
+        self.assertFalse(proposal_tool.annotations.destructive_hint)
+        self.assertTrue(proposal_tool.annotations.idempotent_hint)
+        self.assertFalse(proposed.is_error)
+        self.assertTrue(proposed.structured_content["candidate_untrusted"])
+        self.assertEqual("mcp:unverified", proposed.structured_content["actor"])
+        self.assertEqual("agent_proposal", proposed.structured_content["requested_authority"])
+        self.assertEqual(1, listed.structured_content["count"])
+        plan = previewed.structured_content["review_plan"]
+        self.assertFalse(plan["signable"])
+        self.assertNotIn("executor_id", plan)
+        self.assertNotIn("policy_digest", plan)
+        self.assertEqual("proposal-only", status.structured_content["mutation_mode"])
+        self.assertFalse(status.structured_content["accepted_state_mutation_available"])
+        self.assertTrue(denied.is_error)
+        self.assertEqual([], history["claims"])
+        self.assertEqual([], history["events"])
+
+    def test_rate_limit_is_process_local_and_fails_before_second_write(self) -> None:
+        async def run(root: Path):
+            async with Client(
+                proposal_server(root, max_requests_per_minute=1),
+                raise_exceptions=True,
+            ) as client:
+                base = {
+                    "project": "orion",
+                    "subject": "Aurora",
+                    "predicate": "uses",
+                    "object": "RateDB",
+                    "valid_from": "2026-08-26T00:00:00Z",
+                    "source_refs": [],
+                    "evidence": [],
+                }
+                first = await client.call_tool("propose_memory", {
+                    **base,
+                    "submission_id": "submission_44444444-4444-4444-8444-444444444444",
+                })
+                second = await client.call_tool("propose_memory", {
+                    **base,
+                    "submission_id": "submission_55555555-5555-4555-8555-555555555555",
+                })
+                return first, second
+
+        with FixtureCopy() as root:
+            run_cli(root, "root-id", "init", "--apply", "--creator", "operator:test")
+            run_cli(root, "rebuild")
+            first, second = asyncio.run(run(root))
+            proposals = list(root.rglob("proposal_*.json"))
+
+        self.assertFalse(first.is_error)
+        self.assertTrue(second.is_error)
+        self.assertEqual(1, len(proposals))
+
+    def test_server_fails_closed_if_root_identity_changes_after_startup(self) -> None:
+        async def run(root: Path):
+            server = proposal_server(root)
+            identity_path = root / "00_registry" / "ELM_ROOT_ID.json"
+            replacement = json.loads(identity_path.read_text(encoding="utf-8"))
+            replacement["creator"] = "operator:tampered-after-startup"
+            identity_path.write_text(
+                json.dumps(replacement, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            async with Client(server, raise_exceptions=True) as client:
+                status = await client.call_tool("status", {})
+                proposed = await client.call_tool("propose_memory", {
+                    "submission_id": "submission_99999999-9999-4999-8999-999999999999",
+                    "project": "orion",
+                    "subject": "Aurora",
+                    "predicate": "uses",
+                    "object": "IdentityBypassDB",
+                    "valid_from": "2026-08-26T00:00:00Z",
+                    "source_refs": [],
+                    "evidence": [],
+                })
+                return status, proposed
+
+        with FixtureCopy() as root:
+            run_cli(root, "root-id", "init", "--apply", "--creator", "operator:test")
+            run_cli(root, "rebuild")
+            status, proposed = asyncio.run(run(root))
+            proposals = list(root.rglob("proposal_*.json"))
+
+        self.assertFalse(status.structured_content["healthy"])
+        self.assertIn("root_identity_changed_after_startup", status.structured_content["errors"])
+        self.assertTrue(proposed.is_error)
+        self.assertEqual([], proposals)
+
+    def test_mcp_preflights_reference_bytes_and_untyped_evidence_scalars(self) -> None:
+        async def invoke(root: Path, limits: ProposalLimits, submission_id: str, **changes):
+            arguments = {
+                "submission_id": submission_id,
+                "project": "orion",
+                "subject": "Aurora",
+                "predicate": "uses",
+                "object": "BoundedDB",
+                "valid_from": "2026-08-26T00:00:00Z",
+                "source_refs": [],
+                "evidence": [],
+                **changes,
+            }
+            async with Client(proposal_server(root, limits=limits), raise_exceptions=True) as client:
+                return await client.call_tool("propose_memory", arguments)
+
+        with FixtureCopy() as root:
+            run_cli(root, "root-id", "init", "--apply", "--creator", "operator:test")
+            run_cli(root, "rebuild")
+            references = asyncio.run(invoke(
+                root,
+                ProposalLimits(max_reference_count=1),
+                "submission_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                source_refs=[
+                    "repo://src/a.py@sha256:" + "a" * 64,
+                    "repo://src/b.py@sha256:" + "b" * 64,
+                ],
+            ))
+            oversized = asyncio.run(invoke(
+                root,
+                ProposalLimits(max_request_bytes=128),
+                "submission_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                rationale="x" * 512,
+            ))
+            scalar = asyncio.run(invoke(
+                root,
+                ProposalLimits(),
+                "submission_cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                evidence=[{
+                    "kind": "repository_file",
+                    "source_uri": "repo://src/config.py",
+                    "content_sha256": int("1" * 64),
+                    "sensitivity": "normal",
+                }],
+            ))
+            proposals = list(root.rglob("proposal_*.json"))
+
+        self.assertTrue(references.is_error)
+        self.assertTrue(oversized.is_error)
+        self.assertTrue(scalar.is_error)
+        self.assertEqual([], proposals)
 
 
 if __name__ == "__main__":
