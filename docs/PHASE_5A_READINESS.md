@@ -1,6 +1,6 @@
 # Phase 5A readiness record
 
-Status: local implementation acceptance passed; hosted Windows/Linux release evidence pending
+Status: local and hosted implementation acceptance passed
 
 Date: 2026-08-26
 
@@ -129,9 +129,9 @@ contains no executor ID, policy version, policy digest, signing key, or grant.
   `462831A9D34906005AA181873EAEB35E90B04B47364FD5EC724D5EA8EEE1BE94`.
 
 The existing 50-case sanitized retrieval benchmark, 12-check governance demo,
-and 14-check read-only MCP demo also pass locally. The remaining release
-evidence is the full hosted CI matrix on Python 3.11–3.14 across Windows and
-Linux.
+and 14-check read-only MCP demo also pass locally. GitHub Actions run
+`33026006634` passed the sanitized demo job and the full Python 3.11–3.14 matrix
+on both Ubuntu and Windows for implementation commit `6029d55`.
 
 ## Operational start
 
