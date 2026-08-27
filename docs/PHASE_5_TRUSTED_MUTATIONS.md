@@ -1,6 +1,6 @@
 # Phase 5 — Trusted mutation design
 
-Status: Phase 5A ratified for implementation; Phase 5B deferred and inactive
+Status: Phase 5A implemented and locally verified; Phase 5B deferred and inactive
 
 Date: 2026-08-26
 
@@ -174,7 +174,10 @@ surface:
 5. The caller supplies a random `submission_id`. Under the writer lock, ELM
    checks canonical `(project, submission_id, payload_digest)` state. Reuse with
    the same payload returns the prior proposal; reuse with a different payload
-   fails.
+   fails. Explicit proposal deletion retains only a domain-separated hash of
+   `(project, submission_id)` in the metadata-only tombstone, so the retired
+   identity cannot be reused without retaining proposal content or its payload
+   digest.
 6. Existing Phase 3 field limits are retained and explicit limits are added for
    reference counts, request bytes, pending proposals and bytes per project,
    root-wide pending records and bytes, and per-process request rate. Durable
@@ -190,6 +193,10 @@ surface:
     and proposal creation occur under one writer lock in one recoverable Phase 3
     canonical transaction. A crash cannot leave orphan evidence or reserve a
     submission ID without its proposal.
+11. Proposal list and preview perform their final projection-freshness check and
+    governed read inside one writer-lock interval. A concurrent canonical commit
+    therefore linearizes before the check or after the returned snapshot; it
+    cannot make stale SQLite state appear current between check and use.
 
 The `payload_digest` is
 `SHA-256(ASCII("ELM-PROPOSAL-SUBMISSION-V1") || 0x00 || JCS(payload))`.
@@ -564,12 +571,12 @@ not accepted as proof of identity or intent.
 
 1. **5.0 — Ratify this contract.** Completed 2026-08-26. The approval covers
    Phase 5A only; it does not authorize Phase 5B accepted-state execution.
-2. **5A.1 — Canonical identities and limits.** Add root identity, proposal-v2
+2. **5A.1 — Canonical identities and limits.** Completed locally. Added root identity, proposal-v2
    submission metadata, explicit project allowlists, root/project quotas,
    compound transactions, migrations, and concurrency/crash tests in the core.
-3. **5A.2 — Proposal-only MCP tools.** Delegate to the CLI JSON contract and
+3. **5A.2 — Proposal-only MCP tools.** Completed locally. Delegates to the CLI JSON contract and
    verify that accepted state cannot change through the exposed surface.
-4. **5A.3 — Non-signable review plan.** Add deterministic submission
+4. **5A.3 — Non-signable review plan.** Completed locally. Added deterministic submission
    canonicalization, preview, and cross-platform digest vectors without an
    executor identity, policy, or signing dependency.
 5. **5A release gate.** Run the full Phase 1–4 suite, proposal abuse tests,

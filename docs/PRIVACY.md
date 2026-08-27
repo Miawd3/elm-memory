@@ -1,4 +1,4 @@
-# Privacy Model — Phase 3
+# Privacy Model — Phase 5A
 
 ELM keeps durable project memory in inspectable files under the configured root.
 `<root>/.elm/index.sqlite` contains copied Markdown text and governed-record
@@ -17,6 +17,12 @@ to access to the indexed memory.
   `retention: reference_only`; the CLI has no raw-payload import operation.
 - Proposals are candidate records. Acceptance requires an explicit lifecycle
   command and accepted authority label; model inference is never auto-accepted.
+- The MCP process default is read-only. The opt-in proposal-only profile may
+  persist candidate text, source locators, and hashes for server-allowlisted
+  projects, but it exposes no accepted-state transition.
+- Proposal-only input rejects raw-evidence fields, embedded URI credentials,
+  and URI query strings. This reduces obvious leakage paths but cannot reliably
+  detect every secret embedded in arbitrary candidate prose.
 - Default context traces contain a task SHA-256, filters, section keys, timing,
   and token estimates, but no source body or raw task text.
 - Raw task text in a trace requires explicit `--trace-query-text`; `--no-trace`

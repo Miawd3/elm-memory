@@ -1,6 +1,6 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: active staged architecture; Phases 1–4 implemented and verified; Phase 5A ratified for implementation
+Status: active staged architecture; Phases 1–4 implemented and verified; Phase 5A implemented and locally verified
 
 Date: 2026-08-26
 
@@ -21,9 +21,10 @@ Recommended definition:
 It helps heterogeneous agents recover bounded, source-linked project context without sharing full chat histories or depending on a hosted memory service.
 
 The first public release remains a clean, tested deterministic core with
-governed claims and a read-only interoperability adapter. Authenticated actors,
-raw evidence payloads, and controlled MCP mutation remain later designs rather
-than implicit capabilities.
+governed claims, a read-only interoperability adapter, and an opt-in
+proposal-only MCP profile. Authenticated actors, raw evidence payloads, and
+accepted-state MCP mutation remain later designs rather than implicit
+capabilities.
 
 ## 2. Authority and status
 
@@ -39,7 +40,7 @@ than implicit capabilities.
 
 - Canonical project knowledge is stored in Markdown.
 - `.elm/index.sqlite` is disposable and rebuildable.
-- The current CLI provides `sync`, `rebuild`, `status`, `search`, `context`, `outline`, `read`, `related`, `history`, `stats`, `doctor`, governed lifecycle commands, and explicit `ids assign` mutation.
+- The current CLI provides `sync`, `rebuild`, `status`, `search`, `context`, `outline`, `read`, `related`, `history`, `stats`, `doctor`, governed lifecycle commands, explicit `ids assign`, root-identity bootstrap, and the proposal-only JSON contract used by MCP.
 - Retrieval uses SQLite FTS5 and section-level reads.
 - Archive, project, and namespace policy applies to search, outline, read, and related, including direct-ID reads.
 - SQLite integer IDs remain compatibility references; optional document UUIDs and derived section keys provide rebuild-stable public identity.
@@ -49,7 +50,8 @@ than implicit capabilities.
 - Phase 2 is complete: bounded deterministic context packets, privacy-minimized disposable retrieval traces, retention cleanup, and comparative evaluation are implemented.
 - Phase 3 is merged and live-validated: immutable proposals, reference-only evidence metadata, canonical claim Markdown, explicit lifecycle transitions, valid/recorded-time history, contradictions, tombstones, and recoverable transactions.
 - Phase 4 is implemented and host-validated: a seven-tool read-only MCP adapter delegates to the CLI JSON contract, reports exact index readiness, and returns equivalent stable source identities through Antigravity/Gemini and Codex.
-- Raw evidence snapshots, controlled MCP mutation, embeddings, and model summarization remain deferred.
+- Phase 5A is implemented and locally verified: an explicit proposal-only profile adds propose/list/non-signable-preview, while the process default remains the exact Phase 4 read surface and accepted state is unreachable through MCP.
+- Raw evidence snapshots, accepted-state MCP mutation, embeddings, and model summarization remain deferred.
 
 ### Provisional design
 
@@ -649,9 +651,10 @@ Acceptance:
 
 Goal: expose proposals safely without letting an agent self-ratify memory.
 
-Status: Phase 5A ratified on 2026-08-26 and active for implementation; Phase 5B
-remains deferred and inactive. The detailed threat model, trust boundary, grant
-schema, and acceptance matrix are in
+Status: Phase 5A ratified and implemented on 2026-08-26; local acceptance passes
+and hosted Windows/Linux CI remains the release gate. Phase 5B remains deferred
+and inactive. The detailed threat model, trust boundary, grant schema, and
+acceptance matrix are in
 [PHASE_5_TRUSTED_MUTATIONS.md](PHASE_5_TRUSTED_MUTATIONS.md).
 
 Prerequisites:
@@ -778,15 +781,15 @@ first public tag.
 
 ## 21. Immediate next implementation slice
 
-Phase 4 is complete. Phase 5A proposal-only MCP mutation was ratified on
-2026-08-26 and is the active implementation slice.
+Phase 4 is complete. Phase 5A proposal-only MCP mutation was ratified,
+implemented, and locally verified on 2026-08-26.
 
-The active gate is **Phase 5A proposal-only MCP mutation** as defined in
-[PHASE_5_TRUSTED_MUTATIONS.md](PHASE_5_TRUSTED_MUTATIONS.md). Accepted-state
-MCP mutation requires a later, separately authorized Phase 5B verifier
-deployment. Direct arbitrary Markdown writes, raw evidence snapshots,
-embeddings, authenticated multi-user scopes, and model summarization remain
-outside the Phase 5A gate.
+The active gate is **Phase 5A release validation** as defined in
+[PHASE_5_TRUSTED_MUTATIONS.md](PHASE_5_TRUSTED_MUTATIONS.md) and
+[PHASE_5A_READINESS.md](PHASE_5A_READINESS.md). Accepted-state MCP mutation
+requires a later, separately authorized Phase 5B verifier deployment. Direct
+arbitrary Markdown writes, raw evidence snapshots, embeddings, authenticated
+multi-user scopes, and model summarization remain outside the Phase 5A gate.
 
 ## 22. Supersession rule
 

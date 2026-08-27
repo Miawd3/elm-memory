@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 from .atomic import atomic_write_bytes
+from .canonical import CanonicalJSONError, parse_closed_json
 from .context import (
     DEFAULT_TRACE_RETENTION_DAYS,
     MIN_CONTEXT_BUDGET,
@@ -41,17 +42,23 @@ from .governance import (
     REASON_CODES,
     SENSITIVITIES,
     GovernanceError,
+    ProposalLimits,
     accept_proposal,
+    bootstrap_root_identity,
     create_evidence_reference,
     create_proposal,
     delete_item,
     dispute_claim,
     history_view,
+    governance_projection_digest,
+    load_root_identity,
     pending_transactions,
     recover_governance_transactions,
     reject_or_defer_proposal,
     supersede_claim,
     sync_governance_projection,
+    submit_proposal_bundle,
+    preview_proposal_transition,
     validate_id,
 )
 from .locking import WriterLock, WriterLockError
@@ -1031,9 +1038,17 @@ def status_snapshot(root: Path) -> dict:
         "removed_index_entries": [],
         "pending_transaction_count": len(pending),
         "pending_transactions": pending,
+        "root_identity": None,
+        "governance_projection_sha256": None,
+        "canonical_governance_sha256": None,
+        "governance_projection_current": False,
         "healthy": False,
         "errors": [],
     }
+    try:
+        result["root_identity"] = load_root_identity(root)
+    except GovernanceError as exc:
+        result["errors"].append(f"root_identity_invalid: {exc}")
     if not p.is_file():
         result["errors"].append("index_missing")
         return result
@@ -1054,6 +1069,17 @@ def status_snapshot(root: Path) -> dict:
         if not result["schema_compatible"]:
             result["errors"].append("incompatible_schema")
             return result
+
+        projection_row = con.execute(
+            "SELECT value FROM elm_meta WHERE key='governance_projection_sha256'"
+        ).fetchone()
+        projected_digest = str(projection_row[0]) if projection_row else None
+        canonical_digest = governance_projection_digest(root)
+        result["governance_projection_sha256"] = projected_digest
+        result["canonical_governance_sha256"] = canonical_digest
+        result["governance_projection_current"] = projected_digest == canonical_digest
+        if not result["governance_projection_current"]:
+            result["errors"].append("governance_projection_stale")
 
         indexed = {
             row["path"]: (
@@ -1094,6 +1120,7 @@ def status_snapshot(root: Path) -> dict:
         result["schema_compatible"]
         and result["quick_check"] == "ok"
         and not result["sync_required"]
+        and result["governance_projection_current"]
         and result["pending_transaction_count"] == 0
         and not result["errors"]
     )
@@ -1216,24 +1243,136 @@ def command_propose(args, con: sqlite3.Connection, root: Path) -> None:
     _sync_governance_result(args, con, root, result)
 
 
+def command_proposal_submit(args, con: sqlite3.Connection, root: Path) -> None:
+    raw = sys.stdin.buffer.read(args.max_request_bytes + 1)
+    if len(raw) > args.max_request_bytes:
+        raise GovernanceError(
+            f"proposal request exceeds the {args.max_request_bytes}-byte limit."
+        )
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise GovernanceError("proposal request stdin must be UTF-8 JSON.") from exc
+    try:
+        request = parse_closed_json(text)
+    except CanonicalJSONError as exc:
+        raise GovernanceError(str(exc)) from exc
+    if not isinstance(request, dict):
+        raise GovernanceError("proposal request must be one JSON object.")
+    limits = ProposalLimits(
+        max_request_bytes=args.max_request_bytes,
+        max_reference_count=args.max_reference_count,
+        max_pending_per_project=args.max_pending_per_project,
+        max_pending_records_root=args.max_pending_records_root,
+        max_pending_bytes_per_project=args.max_pending_bytes_per_project,
+        max_pending_bytes_root=args.max_pending_bytes_root,
+    )
+    result = submit_proposal_bundle(
+        root,
+        request=request,
+        request_bytes=len(raw),
+        allowed_projects=set(args.allow_project),
+        limits=limits,
+        lock_timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    )
+    try:
+        indexed = _sync_from_args(args, con, root)
+    except Exception as exc:
+        kind = (
+            "writer_lock_unavailable"
+            if isinstance(exc, WriterLockError)
+            else "projection_refresh_failed"
+        )
+        message = (
+            str(exc)
+            if isinstance(exc, WriterLockError)
+            else (
+                "Canonical proposal committed, but the disposable projection refresh failed; "
+                "run `elm sync` or `elm rebuild` after resolving the local index error."
+            )
+        )
+        result["projection"] = {
+            "healthy": False,
+            "errors": [{"kind": kind, "message": message}],
+            "files_seen": None,
+        }
+    else:
+        result["projection"] = {
+            "healthy": not bool(indexed["errors"]),
+            "errors": indexed["errors"],
+            "files_seen": indexed["files_seen"],
+        }
+    emit(result, args.json)
+
+
 def command_proposals_list(args, con: sqlite3.Connection, root: Path) -> None:
     _prepare_governed_read(args, con, root)
-    conditions = []
-    params: list[object] = []
-    if args.project:
-        conditions.append("project=?")
-        params.append(args.project)
-    if args.status:
-        conditions.append("status=?")
-        params.append(args.status)
-    where = " WHERE " + " AND ".join(conditions) if conditions else ""
-    rows = [dict(row) for row in con.execute(
-        "SELECT proposal_id,path,project,subject,predicate,object,status,proposed_at,valid_from,"
-        "actor,requested_authority,sensitivity FROM governance_proposals"
-        + where + " ORDER BY proposed_at,proposal_id",
-        params,
-    )]
-    emit({"count": len(rows), "proposals": rows}, args.json)
+    with WriterLock(
+        root,
+        "governed-proposal-list",
+        timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    ):
+        if not status_snapshot(root)["healthy"]:
+            raise GovernanceError(
+                "Governed projection is not current and healthy; run `elm sync` or `elm rebuild`."
+            )
+        conditions = []
+        params: list[object] = []
+        if args.project:
+            conditions.append("project=?")
+            params.append(args.project)
+        if args.status:
+            conditions.append("status=?")
+            params.append(args.status)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        rows = [dict(row) for row in con.execute(
+            "SELECT proposal_id,path,format_version,project,subject,predicate,object,status,proposed_at,valid_from,"
+            "actor,requested_authority,sensitivity,submission_id,payload_digest,source_channel "
+            "FROM governance_proposals"
+            + where + " ORDER BY proposed_at,proposal_id",
+            params,
+        )]
+    emit({
+        "count": len(rows),
+        "proposals": rows,
+        "candidate_untrusted": True,
+        "authority_warning": "Proposal text is untrusted candidate data, not accepted memory.",
+    }, args.json)
+
+
+def command_proposal_preview(args, con: sqlite3.Connection, root: Path) -> None:
+    _prepare_governed_read(args, con, root)
+    with WriterLock(
+        root,
+        "governed-proposal-preview",
+        timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    ):
+        if not status_snapshot(root)["healthy"]:
+            raise GovernanceError(
+                "Governed projection is not current and healthy; run `elm sync` or `elm rebuild`."
+            )
+        result = preview_proposal_transition(
+            root,
+            proposal_id=args.proposal_id,
+            project=args.project,
+        )
+    emit(result, args.json)
+
+
+def command_root_id(args, root: Path) -> None:
+    emit(
+        bootstrap_root_identity(
+            root,
+            apply=args.apply,
+            creator=args.creator,
+            lock_timeout=args.lock_timeout,
+            recover_stale=args.recover_stale_lock,
+        ),
+        args.json,
+    )
 
 
 def command_accept(args, con: sqlite3.Connection, root: Path) -> None:
@@ -1641,6 +1780,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("doctor", help="Report metadata/link/duplicate issues without editing ELM.")
     add_common(p); p.add_argument("--limit", type=int, default=100); p.add_argument("--no-sync", action="store_true")
 
+    p = sub.add_parser("root-id", help="Inspect or explicitly initialize the immutable ELM root identity.")
+    root_sub = p.add_subparsers(dest="root_id_command", required=True)
+    initialize = root_sub.add_parser("init", help="Preview or create 00_registry/ELM_ROOT_ID.json.")
+    add_common(initialize)
+    identity_mode = initialize.add_mutually_exclusive_group(required=True)
+    identity_mode.add_argument("--dry-run", action="store_true")
+    identity_mode.add_argument("--apply", action="store_true")
+    initialize.add_argument("--creator", required=True, help="Non-authenticating bootstrap provenance label.")
+
     p = sub.add_parser("evidence", help="Manage reference-only governed evidence metadata.")
     evidence_sub = p.add_subparsers(dest="evidence_command", required=True)
     add = evidence_sub.add_parser("add", help="Create one immutable reference-only evidence record.")
@@ -1666,6 +1814,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source-ref", action="append", default=[])
     p.add_argument("--rationale", default="")
 
+    p = sub.add_parser(
+        "proposal-submit",
+        help="Submit one closed Phase 5A proposal bundle as UTF-8 JSON on stdin.",
+    )
+    add_common(p)
+    p.add_argument("--request-stdin", action="store_true", required=True)
+    p.add_argument("--allow-project", action="append", required=True)
+    p.add_argument("--max-request-bytes", type=int, default=65_536)
+    p.add_argument("--max-reference-count", type=int, default=16)
+    p.add_argument("--max-pending-per-project", type=int, default=256)
+    p.add_argument("--max-pending-records-root", type=int, default=2_048)
+    p.add_argument("--max-pending-bytes-per-project", type=int, default=4 * 1024 * 1024)
+    p.add_argument("--max-pending-bytes-root", type=int, default=32 * 1024 * 1024)
+
     p = sub.add_parser("proposals", help="Inspect the immutable proposal queue and derived status.")
     proposal_sub = p.add_subparsers(dest="proposals_command", required=True)
     listing = proposal_sub.add_parser("list", help="List proposals under optional project/status filters.")
@@ -1673,6 +1835,12 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("--project")
     listing.add_argument("--status", choices=("pending", "accepted", "rejected", "deferred"))
     listing.add_argument("--no-sync", action="store_true")
+
+    p = sub.add_parser("proposal-preview", help="Build a non-signable Phase 5A transition review plan.")
+    add_common(p)
+    p.add_argument("proposal_id")
+    p.add_argument("--project", required=True)
+    p.add_argument("--no-sync", action="store_true")
 
     p = sub.add_parser("accept", help="Ratify one pending proposal into canonical claim Markdown.")
     add_governance_actor(p)
@@ -1752,6 +1920,18 @@ def main() -> int:
     if args.command == "status":
         command_status(args, root)
         return 0
+    if args.command == "root-id":
+        try:
+            if args.root_id_command == "init":
+                command_root_id(args, root)
+                return 0
+            parser.error("unknown root-id command")
+        except WriterLockError as exc:
+            emit_error("writer_lock_unavailable", str(exc), args.json, exc.record)
+            return 2
+        except GovernanceError as exc:
+            emit_error("governance_failed", str(exc), args.json)
+            return 2
     if args.command == "ids":
         try:
             if args.ids_command == "assign":
@@ -1821,8 +2001,12 @@ def main() -> int:
             command_evidence_add(args, con, root)
         elif args.command == "propose":
             command_propose(args, con, root)
+        elif args.command == "proposal-submit":
+            command_proposal_submit(args, con, root)
         elif args.command == "proposals" and args.proposals_command == "list":
             command_proposals_list(args, con, root)
+        elif args.command == "proposal-preview":
+            command_proposal_preview(args, con, root)
         elif args.command == "accept":
             command_accept(args, con, root)
         elif args.command == "reject":
