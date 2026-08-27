@@ -1,16 +1,20 @@
 # Two-agent read-only MCP handoff
 
-This demo proves that two heterogeneous coding-agent hosts can recover the same
-accepted project decision from one sanitized ELM core. It never reads a personal
-ELM root and never exposes a mutation tool.
+This cooperative compatibility demo shows two heterogeneous coding-agent hosts
+recovering the same accepted project decision from one sanitized ELM core. It
+never reads a personal ELM root and never exposes a mutation tool. The stricter
+tool-provenance experiment is documented in the
+[heterogeneous agent pilot](../../docs/HETEROGENEOUS_AGENT_PILOT.md).
 
 ## Prerequisites
 
 - Python 3.11 or newer;
 - `elm-memory[mcp]` installed from this checkout;
 - authenticated `agy` and `codex` CLIs on `PATH`;
-- the scoped Antigravity permission `mcp(elm/*)` in
-  `~/.gemini/antigravity-cli/settings.json`.
+- temporary Antigravity permissions `mcp(elm_demo/status)`,
+  `mcp(elm_demo/context)`, and `mcp(elm_demo/read)` in
+  `~/.gemini/antigravity-cli/settings.json`; restore the original settings file
+  byte-for-byte immediately after the run.
 
 Run:
 
@@ -19,8 +23,8 @@ python examples/two-agent-handoff/run_hosts.py --assert-pass
 ```
 
 The harness copies the synthetic Orion fixture to a temporary directory,
-rebuilds its disposable index, and gives both hosts the same absolute stdio
-launch command:
+rebuilds its disposable index, gives every host a separate empty workspace, and
+gives both hosts the same absolute stdio launch command:
 
 ```text
 python -m elm_memory.mcp_server --root <temporary-synthetic-root>
@@ -32,9 +36,14 @@ storage decision with its stable section identity. The demo passes only when
 both recover `PostgreSQL 17` from
 `20_projects/orion/DECISIONS.md` and return the same `section_key`.
 
+Expected answer and source values are evaluator-side only. The response schema
+does not contain them, and the agent workspaces do not contain the fixture. The
+cooperative host contract directs recovery through the read-only MCP boundary;
+the stricter pilot additionally audits streamed tool provenance.
+
 The report keeps only host versions, boolean checks, the sanitized source
-identity, and bounded errors. It does not retain model conversations or raw
-terminal output.
+identity, and bounded error categories. It does not retain model conversations,
+provider diagnostics, session identifiers, or raw terminal output.
 
 Claude Code is an additional supported host. After authenticating it, replace
 Antigravity in the same acceptance harness:

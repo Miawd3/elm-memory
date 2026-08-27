@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ELM heterogeneous pilot response",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "answer": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "source_path": {
+      "type": ["string", "null"],
+      "maxLength": 300
+    },
+    "section_key": {
+      "type": ["string", "null"],
+      "pattern": "^section_[0-9a-f-]+$"
+    },
+    "evidence_status": {
+      "type": "string",
+      "enum": ["retrieved", "provided", "insufficient"]
+    }
+  },
+  "required": ["answer", "source_path", "section_key", "evidence_status"]
+}
