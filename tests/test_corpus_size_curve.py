@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -194,6 +195,14 @@ class CorpusSizeCurveContractTests(unittest.TestCase):
         summary = CURVE.build_crossover_summary(aggregates, min_consecutive_sizes=2)
         self.assertFalse(summary[0]["benchmark_qualified_crossover"])
 
+        disabled = CURVE.build_crossover_summary(
+            aggregates,
+            min_consecutive_sizes=2,
+            claim_mode_enabled=False,
+        )
+        self.assertFalse(disabled[0]["benchmark_qualified_crossover"])
+        self.assertEqual("claim_mode_not_enabled", disabled[0]["interpretation"])
+
     def test_incomplete_pairs_cannot_qualify_a_curve_cell(self) -> None:
         comparisons = [
             {
@@ -303,6 +312,82 @@ class CorpusSizeCurveContractTests(unittest.TestCase):
         )
 
         self.assertTrue(all(checks.values()), checks)
+
+    def test_claim_capable_configuration_requires_pinned_codex_execution(self) -> None:
+        arguments = argparse.Namespace(
+            claim_capable=True,
+            case_ids=("orion_storage", "orion_time", "orion_logs"),
+            repeats=2,
+            min_pairs_for_claim=5,
+            target_corpus_tokens=(2_000, 8_000),
+            min_consecutive_sizes=2,
+            routes=("codex",),
+            openai_model="gpt-test",
+            gemini_model=None,
+            antigravity_claude_model=None,
+            claude_code_model=None,
+            openai_reasoning_effort="low",
+        )
+
+        self.assertTrue(
+            CURVE.claim_capable_configuration_is_valid(
+                arguments, {"codex": "gpt-test"}
+            )
+        )
+        arguments.openai_reasoning_effort = None
+        self.assertFalse(
+            CURVE.claim_capable_configuration_is_valid(
+                arguments, {"codex": "gpt-test"}
+            )
+        )
+        arguments.openai_reasoning_effort = "low"
+        arguments.openai_model = None
+        self.assertFalse(
+            CURVE.claim_capable_configuration_is_valid(
+                arguments, {"codex": None}
+            )
+        )
+
+    def test_preflight_plan_builds_exact_roots_without_provider_calls(self) -> None:
+        arguments = argparse.Namespace(
+            routes=("codex",),
+            case_ids=("orion_storage",),
+            target_corpus_tokens=(2_000, 8_000),
+            repeats=2,
+            claim_capable=False,
+            openai_model=None,
+            gemini_model=None,
+            antigravity_claude_model=None,
+            claude_code_model=None,
+            openai_reasoning_effort=None,
+            min_pairs_for_claim=5,
+            min_consecutive_sizes=2,
+            max_prompt_estimated_tokens=20_000,
+            max_total_seconds=120.0,
+            max_runs=8,
+        )
+        original_route_models = CURVE.route_models
+        original_run_codex = CURVE.PILOT.run_codex
+        try:
+            CURVE.route_models = lambda _: ({"codex": None}, [])
+            CURVE.PILOT.run_codex = lambda **_: self.fail("provider call attempted")
+            plan = CURVE.build_preflight_plan(arguments)
+        finally:
+            CURVE.route_models = original_route_models
+            CURVE.PILOT.run_codex = original_run_codex
+
+        self.assertTrue(plan["passed"], plan["checks"])
+        self.assertEqual("elm-corpus-size-curve-plan-v1", plan["schema"])
+        self.assertEqual(8, plan["configuration"]["planned_provider_runs"])
+        self.assertEqual(
+            "bounded_benchmark_panel_only", plan["configuration"]["claim_scope"]
+        )
+        self.assertEqual("case_repeat_pair", plan["configuration"]["statistical_unit"])
+        self.assertFalse(
+            plan["configuration"]["population_generalization_supported"]
+        )
+        self.assertEqual(2, len(plan["sizes"]))
+        self.assertFalse(plan["privacy"]["provider_calls_executed"])
 
 
 if __name__ == "__main__":

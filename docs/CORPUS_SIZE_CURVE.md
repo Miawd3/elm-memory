@@ -104,23 +104,64 @@ python benchmarks/run_corpus_size_curve.py \
   --assert-pass
 ```
 
-A claim-capable Codex matrix uses all three cases, two repeats, and 48 calls:
+A claim-capable five-size Codex matrix uses all three cases, two repeats, and
+60 calls. Build the exact synthetic roots and inspect the prompt envelope first;
+`--plan-only` performs no provider calls:
 
 ```bash
 python benchmarks/run_corpus_size_curve.py \
-  --execute \
+  --plan-only \
+  --claim-capable \
   --routes codex \
   --all-cases \
+  --target-corpus-tokens 2000 8000 32000 128000 192000 \
   --repeats 2 \
-  --max-runs 48 \
+  --codex-model gpt-5.6-sol \
+  --codex-reasoning-effort low \
+  --max-runs 60 \
+  --max-total-seconds 7200 \
+  --max-prompt-estimated-tokens 200000 \
+  --fail-fast \
   --assert-pass
 ```
+
+Run the reviewed plan by replacing `--plan-only` with `--execute`; keep every
+other argument identical. `--claim-capable` prevents a crossover from being
+reported unless every selected route has an explicit model and Codex also has
+an explicit reasoning effort. Without that flag, successful calibration output
+remains diagnostic and its crossover interpretation is
+`claim_mode_not_enabled`.
+
+The 2026-08-27 local preflight produced 60 calls and 30 exact pairs. The fifth
+root contained 197 active documents and 192,573 estimated corpus tokens; its
+largest full-corpus initial prompt estimate was 192,792. The selected Codex
+model metadata advertised a 272,000-token context window with a 95% effective
+window (258,400), leaving 65,608 estimated tokens of conservative headroom for
+host instructions, tools, and output. This is a run-specific safety rationale,
+not a portable promise about future model versions.
+
+At each size the matrix has six pairs. With a one-sided exact sign test, all six
+must favor ELM to pass alpha `0.05`: six of six gives `p = 0.015625`, while five
+of six gives `p = 0.109375`. A crossover still requires a qualifying size plus
+the next and every larger tested size, so a 128,000 crossover needs both the
+128,000 and 192,000 cells to qualify.
+
+The scheduled `case × repeat` pair is the sign-test unit. Because the two
+repeats reuse each of three case templates, this is deliberately labeled
+bounded benchmark-panel evidence, not population inference. It does not
+generalize to unseen tasks, another model, another reasoning effort, or another
+CLI version; that broader claim requires a separately frozen holdout panel.
 
 Real calls always require `--execute`. The harness refuses odd repeat counts,
 unbounded run matrices, prompts above the configured estimate cap, per-run
 timeouts above 900 seconds, and total execution budgets above six hours. Direct
 Claude Code retains its separate per-run USD cap. Authenticated provider runs
 remain local and must not run in hosted CI.
+
+`--fail-fast` is recommended for expensive claim-capable matrices. It stops
+after the first failed quality, telemetry, provenance, or execution cell; the
+incomplete schedule then fails the global integrity gate and cannot produce a
+claim.
 
 Before each provider call, its timeout is reduced to the remaining total budget.
 For Antigravity, the dependency runner's ten-second subprocess grace is

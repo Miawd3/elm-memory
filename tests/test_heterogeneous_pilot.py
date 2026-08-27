@@ -141,6 +141,49 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
         self.assertEqual(1, audit["non_mcp_tool_call_count"])
         self.assertEqual(["command_execution"], audit["unapproved_tool_names"])
 
+    def test_codex_run_pins_requested_reasoning_effort(self) -> None:
+        captured = {}
+        original_which = PILOT.shutil.which
+        original_run_process = PILOT.run_process
+
+        def fake_run_process(command, **kwargs):
+            captured["command"] = command
+            output_index = command.index("--output-last-message") + 1
+            Path(command[output_index]).write_text(
+                '{"answer":"UTC","source_path":null,"section_key":null,"evidence_status":"provided"}',
+                encoding="utf-8",
+            )
+            return PILOT.subprocess.CompletedProcess(
+                args=command,
+                returncode=0,
+                stdout='{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}\n',
+                stderr="",
+            )
+
+        try:
+            PILOT.shutil.which = lambda name: "codex" if name == "codex" else None
+            PILOT.run_process = fake_run_process
+            with PILOT.disposable_directory("elm-codex-reasoning-test-") as workspace:
+                status, _, _, _, _ = PILOT.run_codex(
+                    workspace=workspace,
+                    root=workspace,
+                    runtime=workspace,
+                    prompt="prompt",
+                    condition="full_corpus",
+                    model="gpt-test",
+                    reasoning_effort="low",
+                    timeout=5.0,
+                )
+        finally:
+            PILOT.shutil.which = original_which
+            PILOT.run_process = original_run_process
+
+        self.assertEqual("completed", status)
+        config_index = captured["command"].index("--config") + 1
+        self.assertEqual(
+            'model_reasoning_effort="low"', captured["command"][config_index]
+        )
+
     def test_antigravity_and_claude_usage_remain_provider_native(self) -> None:
         antigravity = "\n".join(
             (

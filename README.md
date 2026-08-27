@@ -358,7 +358,10 @@ checks the deterministic scale generator, nested-corpus invariant, oracle
 separation, and counterbalanced paired schedule without calling a model. Real
 size curves are local and opt-in through `--execute`; they preserve strict
 within-route telemetry/provenance gates and can validly finish with no observed
-crossover. The method and conservative claim rule are documented in
+crossover. `--plan-only` builds the exact disposable roots and prompt envelope
+without provider calls, while `--claim-capable` requires explicit model/effort
+pinning before any crossover can be reported. The method and conservative claim
+rule are documented in
 [docs/CORPUS_SIZE_CURVE.md](docs/CORPUS_SIZE_CURVE.md).
 
 ## Architecture boundary
