@@ -318,6 +318,8 @@ python -m unittest discover -s tests -v
 python benchmarks/run_benchmark.py --assert-pass
 python benchmarks/run_governance_demo.py --assert-pass
 python benchmarks/run_mcp_demo.py --assert-pass
+python benchmarks/run_phase5a_demo.py --assert-pass
+python benchmarks/run_phase5a_soak.py --assert-pass
 python examples/two-agent-handoff/run_hosts.py --assert-pass
 ```
 
@@ -331,6 +333,15 @@ billed-token savings.
 `python benchmarks/run_governance_demo.py --assert-pass` adds an end-to-end,
 fully synthetic Phase 3 smoke test: propose, ratify, supersede, current/history
 separation, rebuild, doctor, and SQLite integrity.
+
+`python benchmarks/run_phase5a_soak.py --assert-pass` runs the disposable,
+offline multi-agent Phase 5A pilot: exact and conflicting retries, independent
+writer contention, durable quotas, the process rate brake, stale-projection
+repair, accepted-state isolation, and SQLite integrity. It reports serialized
+request/result byte counts, model-neutral token estimates, and latency without
+claiming access to provider-billed tokens. The workload, gates, and accounting
+boundary are documented in
+[docs/PHASE_5A_SOAK_PILOT.md](docs/PHASE_5A_SOAK_PILOT.md).
 
 ## Architecture boundary
 

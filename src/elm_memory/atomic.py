@@ -5,6 +5,11 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+import time
+
+
+REPLACE_RETRY_SECONDS = 2.0
+REPLACE_RETRY_INTERVAL = 0.01
 
 
 def _fsync_directory(path: Path) -> None:
@@ -15,6 +20,19 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _replace_with_retry(source: Path, target: Path) -> None:
+    """Retry only transient sharing/access violations around one atomic replace."""
+    deadline = time.monotonic() + REPLACE_RETRY_SECONDS
+    while True:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(REPLACE_RETRY_INTERVAL)
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -40,7 +58,7 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
             os.fsync(stream.fileno())
         if existing_mode is not None:
             os.chmod(temporary, existing_mode)
-        os.replace(temporary, path)
+        _replace_with_retry(temporary, path)
         _fsync_directory(path.parent)
     except BaseException:
         try:

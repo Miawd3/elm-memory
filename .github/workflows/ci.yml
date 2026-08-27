@@ -75,3 +75,6 @@ jobs:
 
       - name: Run proposal-only MCP safety demo
         run: python benchmarks/run_phase5a_demo.py --assert-pass
+
+      - name: Run proposal-only multi-agent soak pilot
+        run: python benchmarks/run_phase5a_soak.py --assert-pass
