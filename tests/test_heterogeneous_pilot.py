@@ -123,6 +123,24 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
         self.assertNotIn("secret-session", json.dumps(usage))
         self.assertEqual(["status"], audit["elm_tools"])
 
+    def test_codex_error_items_are_not_misclassified_as_tool_calls(self) -> None:
+        stdout = "\n".join(
+            (
+                '{"type":"item.completed","item":{"type":"error","message":"bounded diagnostic"}}',
+                '{"type":"item.completed","item":{"type":"command_execution","command":"blocked"}}',
+                '{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":3}}',
+            )
+        )
+
+        _, _, audit = PILOT.parse_codex_output(
+            stdout,
+            '{"answer":"UTC","source_path":null,"section_key":null,"evidence_status":"provided"}',
+        )
+
+        self.assertEqual(1, audit["tool_call_count"])
+        self.assertEqual(1, audit["non_mcp_tool_call_count"])
+        self.assertEqual(["command_execution"], audit["unapproved_tool_names"])
+
     def test_antigravity_and_claude_usage_remain_provider_native(self) -> None:
         antigravity = "\n".join(
             (

@@ -321,6 +321,7 @@ python benchmarks/run_mcp_demo.py --assert-pass
 python benchmarks/run_phase5a_demo.py --assert-pass
 python benchmarks/run_phase5a_soak.py --assert-pass
 python benchmarks/run_heterogeneous_pilot.py --validate-only --assert-pass
+python benchmarks/run_corpus_size_curve.py --validate-only --assert-pass
 python examples/two-agent-handoff/run_hosts.py --assert-pass
 ```
 
@@ -351,6 +352,14 @@ only disposable synthetic roots, bounded run counts, isolated host workspaces,
 oracle-free response schemas, and sanitized provider-native usage telemetry.
 The method and its deliberately limited first interpretation are documented in
 [docs/HETEROGENEOUS_AGENT_PILOT.md](docs/HETEROGENEOUS_AGENT_PILOT.md).
+
+`python benchmarks/run_corpus_size_curve.py --validate-only --assert-pass`
+checks the deterministic scale generator, nested-corpus invariant, oracle
+separation, and counterbalanced paired schedule without calling a model. Real
+size curves are local and opt-in through `--execute`; they preserve strict
+within-route telemetry/provenance gates and can validly finish with no observed
+crossover. The method and conservative claim rule are documented in
+[docs/CORPUS_SIZE_CURVE.md](docs/CORPUS_SIZE_CURVE.md).
 
 ## Architecture boundary
 

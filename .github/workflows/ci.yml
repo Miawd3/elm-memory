@@ -78,3 +78,9 @@ jobs:
 
       - name: Run proposal-only multi-agent soak pilot
         run: python benchmarks/run_phase5a_soak.py --assert-pass
+
+      - name: Validate heterogeneous-agent contract
+        run: python benchmarks/run_heterogeneous_pilot.py --validate-only --assert-pass
+
+      - name: Validate corpus-size curve contract
+        run: python benchmarks/run_corpus_size_curve.py --validate-only --assert-pass

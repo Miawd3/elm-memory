@@ -145,11 +145,14 @@ materially expensive or impossible.
 
 ## Next evidence step
 
-The next experiment should generate deterministic synthetic corpora at several
-sizes, counterbalance condition order, repeat each cell, and report distributions
-rather than one ratio. It should keep the same oracle separation, workspace
-isolation, no-memory control, per-route accounting, and canonical immutability
-gate. Phase 5B remains separately blocked on an independent trusted verifier.
+The deterministic corpus-size curve is implemented in
+[CORPUS_SIZE_CURVE.md](CORPUS_SIZE_CURVE.md). It generates nested synthetic
+corpora at several token targets, counterbalances condition and size order,
+repeats exact within-route pairs, and requires conservative statistical and
+provenance gates before reporting a bounded crossover. The original no-memory
+control remains in this pilot; the curve focuses on the two conditions whose
+cost can cross as corpus size grows. Phase 5B remains separately blocked on an
+independent trusted verifier.
 
 This workspace separation is an evaluation-integrity control, not a security
 boundary against a hostile local host. A client that can inspect its process

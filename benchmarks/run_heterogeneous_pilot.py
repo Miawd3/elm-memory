@@ -459,7 +459,7 @@ def parse_codex_output(
             audit["tool_call_count"] += 1
             audit["non_mcp_tool_call_count"] += 1
             audit["unapproved_tool_names"].append(item_type)
-        elif item_type not in {"agent_message", "reasoning", "plan", "todo_list"}:
+        elif item_type not in {"agent_message", "reasoning", "plan", "todo_list", "error"}:
             audit["tool_call_count"] += 1
             audit["non_mcp_tool_call_count"] += 1
             if isinstance(item_type, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", item_type):
