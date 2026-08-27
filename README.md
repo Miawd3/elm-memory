@@ -320,6 +320,7 @@ python benchmarks/run_governance_demo.py --assert-pass
 python benchmarks/run_mcp_demo.py --assert-pass
 python benchmarks/run_phase5a_demo.py --assert-pass
 python benchmarks/run_phase5a_soak.py --assert-pass
+python benchmarks/run_heterogeneous_pilot.py --validate-only --assert-pass
 python examples/two-agent-handoff/run_hosts.py --assert-pass
 ```
 
@@ -343,6 +344,14 @@ claiming access to provider-billed tokens. The workload, gates, and accounting
 boundary are documented in
 [docs/PHASE_5A_SOAK_PILOT.md](docs/PHASE_5A_SOAK_PILOT.md).
 
+`python benchmarks/run_heterogeneous_pilot.py --validate-only --assert-pass`
+checks the offline contract for the post-5A coding-agent experiment. Real
+Codex, Gemini, or Claude calls are local and opt-in through `--execute`; they use
+only disposable synthetic roots, bounded run counts, isolated host workspaces,
+oracle-free response schemas, and sanitized provider-native usage telemetry.
+The method and its deliberately limited first interpretation are documented in
+[docs/HETEROGENEOUS_AGENT_PILOT.md](docs/HETEROGENEOUS_AGENT_PILOT.md).
+
 ## Architecture boundary
 
 The corrected v1 architecture and staged roadmap are documented in
@@ -357,7 +366,7 @@ Phase order:
 2. bounded context packets and privacy-safe traces;
 3. governed proposals, evidence references, claims, and temporal history;
 4. read-only MCP and heterogeneous-host validation;
-5. Phase 5A: opt-in proposal-only MCP with no accepted-state tool (current phase);
+5. Phase 5A: opt-in proposal-only MCP with no accepted-state tool (implemented);
 6. Phase 5B: signed accepted-state execution only after a separate verifier is selected;
 7. optional semantic retrieval only after measured deterministic failures.
 

@@ -2,11 +2,13 @@
 
 ## Current phase
 
-Phases 1 and 2 are implemented and verified: stable foundations, bounded
-deterministic context packets, privacy-minimized disposable retrieval traces,
-retention cleanup, and comparative evaluation. Do not begin claims, evidence
-snapshots, proposals, temporal history, or MCP work until Phase 3 is explicitly
-authorized.
+Phases 1-5A are implemented and verified through the proposal-only MCP boundary.
+The process default remains exactly seven read tools; the opt-in proposal profile
+adds only three untrusted-candidate tools and cannot change accepted memory.
+Phase 5B accepted-state execution remains inactive until a real verifier outside
+the proposing agent's authority is selected and separately ratified. The active
+post-5A work is synthetic heterogeneous-host evaluation and does not widen MCP
+authority.
 
 ## Invariants
 
@@ -30,7 +32,12 @@ Run before handing off changes:
 python -m compileall -q src tests benchmarks
 python -m unittest discover -s tests -v
 python benchmarks/run_benchmark.py --assert-pass
+python benchmarks/run_heterogeneous_pilot.py --validate-only --assert-pass
 ```
+
+Do not run authenticated provider pilots in hosted CI. Real Codex, Gemini,
+Antigravity-Claude, or Claude Code calls require the explicit local `--execute`
+flag, synthetic fixtures, bounded run counts, and sanitized reports.
 
 When modifying the Agent Skill, also run its `quick_validate.py` check. When modifying GitHub Actions, preserve read-only permissions, unprivileged triggers, immutable action pins, and the CI-policy tests.
 

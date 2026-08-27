@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -21,26 +23,40 @@ SCHEMA_PATH = Path(__file__).with_name("result.schema.json")
 PROMPT = (
     "Use only the ELM MCP server. Call status, then context with project='orion', budget=900, "
     "and task='Recover the accepted Orion decision ODR-001 about durable storage'. Read the "
-    "exact selected section if needed. Return only the requested JSON object. Set host to HOST."
+    "exact selected section if needed. Set database to only the exact product name and major "
+    "version, with no surrounding prose. Return only the requested JSON object. Set host to HOST."
 )
+EXPECTED_DATABASE = "PostgreSQL 17"
+EXPECTED_SOURCE_PATH = "20_projects/orion/DECISIONS.md"
+MCP_SERVER_NAME = "elm_demo"
+READ_TOOLS = ("status", "context", "read")
 
 
-def environment() -> dict[str, str]:
+def environment(*, repository_access: bool = True) -> dict[str, str]:
     result = os.environ.copy()
-    current = result.get("PYTHONPATH")
-    result["PYTHONPATH"] = (
-        str(SOURCE_ROOT) if not current else os.pathsep.join((str(SOURCE_ROOT), current))
-    )
+    if repository_access:
+        current = result.get("PYTHONPATH")
+        result["PYTHONPATH"] = (
+            str(SOURCE_ROOT) if not current else os.pathsep.join((str(SOURCE_ROOT), current))
+        )
+    else:
+        result.pop("PYTHONPATH", None)
     result["PYTHONIOENCODING"] = "utf-8"
     result["PYTHONUTF8"] = "1"
     return result
 
 
-def run_process(command: list[str], *, cwd: Path, timeout: float = 300.0) -> subprocess.CompletedProcess[str]:
+def run_process(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: float = 300.0,
+    repository_access: bool = True,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         cwd=cwd,
-        env=environment(),
+        env=environment(repository_access=repository_access),
         stdin=subprocess.DEVNULL,
         check=False,
         capture_output=True,
@@ -68,8 +84,56 @@ def rebuild(root: Path) -> dict[str, Any]:
     return json.loads(completed.stdout)
 
 
-def server_entry(root: Path) -> tuple[str, list[str]]:
-    return sys.executable, ["-m", "elm_memory.mcp_server", "--root", str(root)]
+def prepare_runtime(target: Path) -> Path:
+    runtime = target / "runtime"
+    runtime.mkdir(parents=True)
+    shutil.copytree(SOURCE_ROOT / "elm_memory", runtime / "elm_memory")
+    return runtime
+
+
+@contextmanager
+def disposable_directory(prefix: str):
+    path = Path(tempfile.mkdtemp(prefix=prefix))
+    try:
+        yield path
+    finally:
+        for attempt in range(8):
+            try:
+                shutil.rmtree(path)
+                break
+            except FileNotFoundError:
+                break
+            except PermissionError:
+                if attempt == 7:
+                    raise RuntimeError("Disposable demo workspace could not be removed")
+                time.sleep(0.1 * (attempt + 1))
+
+
+def server_entry(root: Path, runtime: Path) -> tuple[str, list[str]]:
+    bootstrap = (
+        "import sys;"
+        f"sys.path.insert(0,{str(runtime)!r});"
+        "from elm_memory.mcp_server import main;"
+        "raise SystemExit(main())"
+    )
+    return sys.executable, ["-c", bootstrap, "--root", str(root)]
+
+
+class HostRunError(RuntimeError):
+    def __init__(self, category: str):
+        super().__init__(category)
+        self.category = category
+
+
+def provider_failure_category(stdout: str, stderr: str) -> str:
+    detail = f"{stdout}\n{stderr}".casefold()
+    if any(marker in detail for marker in ("oauth session expired", "failed to authenticate")):
+        return "auth_failed"
+    if any(marker in detail for marker in ("quota reached", "quota exhausted", "resource_exhausted")):
+        return "quota_exhausted"
+    if "permission" in detail and any(marker in detail for marker in ("denied", "auto-denied")):
+        return "permission_denied"
+    return "execution_failed"
 
 
 def parse_object(value: Any) -> dict[str, Any] | None:
@@ -88,17 +152,52 @@ def parse_object(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def run_claude(root: Path, scratch: Path, schema: dict[str, Any]) -> dict[str, Any]:
+def normalized_fact(value: Any) -> str:
+    return str(value).strip().rstrip(".").casefold()
+
+
+def expected_section_key(root: Path) -> str:
+    completed = run_process(
+        [
+            sys.executable,
+            "-m",
+            "elm_memory.cli",
+            "search",
+            "durable telemetry records PostgreSQL",
+            "--project",
+            "orion",
+            "--no-sync",
+            "--root",
+            str(root),
+            "--json",
+        ],
+        cwd=REPOSITORY_ROOT,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("Synthetic expected-section lookup failed")
+    matches = [
+        item
+        for item in json.loads(completed.stdout).get("results", [])
+        if item.get("path") == EXPECTED_SOURCE_PATH and item.get("heading") == "ODR-001 — PostgreSQL storage"
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("Synthetic expected-section lookup was ambiguous")
+    return str(matches[0]["section_key"])
+
+
+def run_claude(
+    root: Path, runtime: Path, workspace: Path, schema: dict[str, Any]
+) -> dict[str, Any]:
     executable = shutil.which("claude")
     if not executable:
-        raise RuntimeError("Claude Code executable was not found")
-    command, arguments = server_entry(root)
-    config = scratch / "claude-mcp.json"
+        raise HostRunError("unavailable")
+    command, arguments = server_entry(root, runtime)
+    config = workspace / "claude-mcp.json"
     config.write_text(
         json.dumps(
             {
                 "mcpServers": {
-                    "elm": {
+                    MCP_SERVER_NAME: {
                         "type": "stdio",
                         "command": command,
                         "args": arguments,
@@ -125,21 +224,18 @@ def run_claude(root: Path, scratch: Path, schema: dict[str, Any]) -> dict[str, A
             "--permission-mode",
             "plan",
             "--allowedTools",
-            "mcp__elm__status,mcp__elm__context,mcp__elm__read",
+            ",".join(f"mcp__{MCP_SERVER_NAME}__{tool}" for tool in READ_TOOLS),
             "--no-session-persistence",
             PROMPT.replace("HOST", "claude"),
         ],
-        cwd=root,
+        cwd=workspace,
+        repository_access=False,
     )
     if completed.returncode != 0:
-        raise RuntimeError(
-            completed.stderr.strip()
-            or completed.stdout.strip()
-            or "Claude Code host run failed"
-        )
+        raise HostRunError(provider_failure_category(completed.stdout, completed.stderr))
     parsed = parse_object(json.loads(completed.stdout))
     if not parsed:
-        raise RuntimeError("Claude Code returned no schema-matching object")
+        raise HostRunError("schema_response_missing")
     return parsed
 
 
@@ -147,34 +243,41 @@ def antigravity_model(executable: str) -> str:
     override = os.environ.get("ELM_ANTIGRAVITY_MODEL")
     if override:
         return override
-    completed = run_process([executable, "models"], cwd=REPOSITORY_ROOT, timeout=30.0)
+    completed = run_process(
+        [executable, "models"],
+        cwd=REPOSITORY_ROOT,
+        timeout=30.0,
+        repository_access=False,
+    )
     if completed.returncode != 0:
-        raise RuntimeError(completed.stderr.strip() or "Antigravity model discovery failed")
+        raise HostRunError("model_discovery_failed")
     available = [
         line.split("\t", 1)[0].strip()
         for line in completed.stdout.splitlines()
         if line.startswith("gemini-") and line.split("\t", 1)[0].endswith("-high")
     ]
     if not available:
-        raise RuntimeError("Antigravity reported no Gemini high-effort model")
+        raise HostRunError("model_unavailable")
     return available[0]
 
 
-def run_antigravity(root: Path, scratch: Path, schema: dict[str, Any]) -> dict[str, Any]:
+def run_antigravity(
+    root: Path, runtime: Path, workspace: Path, schema: dict[str, Any]
+) -> dict[str, Any]:
     executable = shutil.which("agy")
     if not executable:
-        raise RuntimeError("Antigravity CLI executable was not found")
-    command, arguments = server_entry(root)
-    agents = root / ".agents"
+        raise HostRunError("unavailable")
+    command, arguments = server_entry(root, runtime)
+    agents = workspace / ".agents"
     agents.mkdir(exist_ok=True)
     (agents / "mcp_config.json").write_text(
         json.dumps(
             {
                 "mcpServers": {
-                    "elm": {
+                    MCP_SERVER_NAME: {
                         "command": command,
                         "args": arguments,
-                        "cwd": str(root),
+                        "cwd": str(workspace),
                     }
                 }
             },
@@ -193,7 +296,7 @@ def run_antigravity(root: Path, scratch: Path, schema: dict[str, Any]) -> dict[s
             "plan",
             "--sandbox",
             "--add-dir",
-            str(root),
+            str(workspace),
             "--model",
             antigravity_model(executable),
             "--output-format",
@@ -203,31 +306,26 @@ def run_antigravity(root: Path, scratch: Path, schema: dict[str, Any]) -> dict[s
             "--print-timeout",
             "5m",
         ],
-        cwd=root,
+        cwd=workspace,
+        repository_access=False,
     )
     if completed.returncode != 0:
-        raise RuntimeError(
-            completed.stderr.strip()
-            or completed.stdout.strip()
-            or "Antigravity host run failed"
-        )
+        raise HostRunError(provider_failure_category(completed.stdout, completed.stderr))
     parsed = parse_object(json.loads(completed.stdout))
     if not parsed:
-        detail = completed.stderr.strip()
-        raise RuntimeError(
-            "Antigravity returned no schema-matching object"
-            + (f": {detail}" if detail else "")
-        )
+        raise HostRunError("schema_response_missing")
     return parsed
 
 
-def run_codex(root: Path, scratch: Path, schema: dict[str, Any]) -> dict[str, Any]:
+def run_codex(
+    root: Path, runtime: Path, workspace: Path, schema: dict[str, Any]
+) -> dict[str, Any]:
     executable = shutil.which("codex")
     if not executable:
-        raise RuntimeError("Codex executable was not found")
-    command, arguments = server_entry(root)
-    output = scratch / "codex-result.json"
-    schema_file = scratch / "codex-result.schema.json"
+        raise HostRunError("unavailable")
+    command, arguments = server_entry(root, runtime)
+    output = workspace / "codex-result.json"
+    schema_file = workspace / "codex-result.schema.json"
     schema_file.write_text(json.dumps(schema, indent=2) + "\n", encoding="utf-8")
     completed = run_process(
         [
@@ -240,28 +338,29 @@ def run_codex(root: Path, scratch: Path, schema: dict[str, Any]) -> dict[str, An
             "--sandbox",
             "read-only",
             "--cd",
-            str(root),
+            str(workspace),
             "--config",
-            f"mcp_servers.elm.command={json.dumps(command)}",
+            f"mcp_servers.{MCP_SERVER_NAME}.command={json.dumps(command)}",
             "--config",
-            f"mcp_servers.elm.args={json.dumps(arguments)}",
+            f"mcp_servers.{MCP_SERVER_NAME}.args={json.dumps(arguments)}",
             "--config",
-            "mcp_servers.elm.required=true",
+            f"mcp_servers.{MCP_SERVER_NAME}.required=true",
             "--config",
-            'mcp_servers.elm.enabled_tools=["status","context","read"]',
+            f"mcp_servers.{MCP_SERVER_NAME}.enabled_tools={json.dumps(list(READ_TOOLS))}",
             "--output-schema",
             str(schema_file),
             "--output-last-message",
             str(output),
             PROMPT.replace("HOST", "codex"),
         ],
-        cwd=root,
+        cwd=workspace,
+        repository_access=False,
     )
     if completed.returncode != 0:
-        raise RuntimeError(completed.stderr.strip() or "Codex host run failed")
+        raise HostRunError(provider_failure_category(completed.stdout, completed.stderr))
     parsed = parse_object(output.read_text(encoding="utf-8"))
     if not parsed:
-        raise RuntimeError("Codex returned no schema-matching object")
+        raise HostRunError("schema_response_missing")
     return parsed
 
 
@@ -269,8 +368,19 @@ def command_version(command: str) -> str | None:
     executable = shutil.which(command)
     if not executable:
         return None
-    completed = run_process([executable, "--version"], cwd=REPOSITORY_ROOT, timeout=30.0)
-    return (completed.stdout or completed.stderr).strip() or None
+    completed = run_process(
+        [executable, "--version"],
+        cwd=REPOSITORY_ROOT,
+        timeout=30.0,
+        repository_access=False,
+    )
+    lines = (completed.stdout or completed.stderr).strip().splitlines()
+    if len(lines) != 1:
+        return None
+    value = lines[0].strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._()+/-]{0,119}", value):
+        return None
+    return value
 
 
 def run_demo(hosts: tuple[str, ...]) -> dict[str, Any]:
@@ -278,36 +388,58 @@ def run_demo(hosts: tuple[str, ...]) -> dict[str, Any]:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     errors: dict[str, str] = {}
     results: dict[str, dict[str, Any]] = {}
-    with tempfile.TemporaryDirectory(prefix="elm-host-demo-") as temporary:
-        scratch = Path(temporary)
+    with disposable_directory("elm-host-demo-") as scratch:
+        runtime = prepare_runtime(scratch)
         root = scratch / "memory"
         shutil.copytree(FIXTURE_ROOT, root)
         rebuilt = rebuild(root)
+        expected_key = expected_section_key(root)
         runners = {
             "antigravity": run_antigravity,
             "claude": run_claude,
             "codex": run_codex,
         }
         for name in hosts:
+            workspace = scratch / "workspaces" / name
+            workspace.mkdir(parents=True)
             try:
-                results[name] = runners[name](root, scratch, schema)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-                errors[name] = str(exc)
+                results[name] = runners[name](root, runtime, workspace, schema)
+            except HostRunError as exc:
+                errors[name] = exc.category
+            except subprocess.TimeoutExpired:
+                errors[name] = "timeout"
+            except (OSError, json.JSONDecodeError):
+                errors[name] = "invalid_host_response"
 
     checks: dict[str, bool] = {"fixture_rebuild_clean": rebuilt["errors"] == []}
     for host in hosts:
         recovered = results.get(host)
-        checks[f"{host}_recovered_state"] = bool(
-            recovered
-            and recovered["host"] == host
-            and recovered["database"] == "PostgreSQL 17"
-        )
+        host_checks = {
+            f"{host}_host_label": bool(recovered and recovered["host"] == host),
+            f"{host}_project": bool(
+                recovered and normalized_fact(recovered["project"]) == "orion"
+            ),
+            f"{host}_database": bool(
+                recovered
+                and normalized_fact(recovered["database"])
+                == normalized_fact(EXPECTED_DATABASE)
+            ),
+            f"{host}_source_path": bool(
+                recovered and recovered["source_path"] == EXPECTED_SOURCE_PATH
+            ),
+            f"{host}_section_key": bool(
+                recovered and recovered["section_key"] == expected_key
+            ),
+        }
+        checks.update(host_checks)
+        checks[f"{host}_recovered_state"] = all(host_checks.values())
     identities = {
         (result["source_path"], result["section_key"])
         for result in results.values()
     }
     checks["same_source_identity"] = len(results) == len(hosts) and len(identities) == 1
-    source_identity = next(iter(identities)) if checks["same_source_identity"] else None
+    all_hosts_recovered = all(checks[f"{host}_recovered_state"] for host in hosts)
+    source_identity_verified = checks["same_source_identity"] and all_hosts_recovered
     return {
         "schema": "elm-heterogeneous-host-demo-v1",
         "fixture": "synthetic-orion",
@@ -316,10 +448,10 @@ def run_demo(hosts: tuple[str, ...]) -> dict[str, Any]:
         "checks": checks,
         "source_identity": (
             {
-                "path": source_identity[0],
-                "section_key": source_identity[1],
+                "path": EXPECTED_SOURCE_PATH,
+                "section_key": expected_key,
             }
-            if checks["same_source_identity"]
+            if source_identity_verified
             else None
         ),
         "errors": errors,

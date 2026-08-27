@@ -151,3 +151,8 @@ can replace filesystem entries between the token check and unlink.
 The next evidence-producing step after this harness is a heterogeneous-agent
 pilot against disposable roots. Phase 5B remains gated on selecting a verifier
 that is genuinely outside the proposing agent's authority.
+
+That next step is now implemented as an opt-in local harness and documented in
+[HETEROGENEOUS_AGENT_PILOT.md](HETEROGENEOUS_AGENT_PILOT.md). It preserves the
+Phase 5A authority boundary and does not turn provider telemetry into a
+cross-provider token comparison.

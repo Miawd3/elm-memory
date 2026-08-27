@@ -7,16 +7,13 @@
       "enum": ["antigravity", "claude", "codex"]
     },
     "project": {
-      "type": "string",
-      "const": "orion"
+      "type": "string"
     },
     "database": {
-      "type": "string",
-      "const": "PostgreSQL 17"
+      "type": "string"
     },
     "source_path": {
-      "type": "string",
-      "const": "20_projects/orion/DECISIONS.md"
+      "type": "string"
     },
     "section_key": {
       "type": "string",
