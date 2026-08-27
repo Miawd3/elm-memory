@@ -133,6 +133,30 @@ and 14-check read-only MCP demo also pass locally. GitHub Actions run
 `33026006634` passed the sanitized demo job and the full Python 3.11–3.14 matrix
 on both Ubuntu and Windows for implementation commit `6029d55`.
 
+## Post-merge soak pilot
+
+The post-merge Phase 5A pilot adds
+`benchmarks/run_phase5a_soak.py` and the operating contract in
+`docs/PHASE_5A_SOAK_PILOT.md`. The default profile repeats seven synthetic
+scenarios twice with six logical MCP agents: exact replay, conflicting replay,
+unique writer contention, durable project quota, process rate limit, stale
+projection repair, and the exact seven/ten-tool surface boundary.
+
+The first repeated Windows run reproduced transient `WinError 32` lock-release
+and `WinError 5` atomic-replace failures. Writer-lock release now performs
+bounded retry with ownership-token revalidation, and atomic replacement performs
+bounded retry only for `PermissionError`. Injected regression tests verify both
+repairs and confirm that a foreign lock token is never deleted.
+
+After those repairs, 113 local tests passed while the two-repetition soak ran in
+parallel with the regression suite. The selected acceptance run completed 70
+logical operations in 81 tool-call attempts with 11 bounded retries, 54
+successful calls, and the expected conflict/quota/rate/stale-projection
+refusals. It reported 9,442 request-side and 39,923 response-side
+model-neutral serialized token estimates. Provider-billed tokens remain
+explicitly unavailable and `null`; latency and estimated-token totals are
+measurements, not fixed CI thresholds.
+
 ## Operational start
 
 ```bash

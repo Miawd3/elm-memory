@@ -12,6 +12,8 @@ import uuid
 
 
 LOCK_FORMAT_VERSION = 1
+RELEASE_RETRY_SECONDS = 2.0
+RELEASE_RETRY_INTERVAL = 0.01
 
 
 def _now_iso() -> str:
@@ -93,11 +95,18 @@ class WriterLock:
         }
         self.acquired = False
 
-    def _read_record(self) -> dict | None:
+    def _read_record_state(self) -> tuple[str, dict | None]:
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeError):
-            return None
+            value = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return "missing", None
+        except (json.JSONDecodeError, OSError, UnicodeError):
+            return "unreadable", None
+        return ("valid", value) if isinstance(value, dict) else ("unreadable", None)
+
+    def _read_record(self) -> dict | None:
+        state, record = self._read_record_state()
+        return record if state == "valid" else None
 
     def _age_seconds(self) -> float:
         try:
@@ -189,13 +198,44 @@ class WriterLock:
     def release(self) -> None:
         if not self.acquired:
             return
-        current = self._read_record()
-        if current and current.get("token") == self.token:
+        deadline = time.monotonic() + RELEASE_RETRY_SECONDS
+        while True:
+            state, current = self._read_record_state()
+            if state == "missing":
+                self.acquired = False
+                return
+            if state == "unreadable":
+                if time.monotonic() < deadline:
+                    time.sleep(RELEASE_RETRY_INTERVAL)
+                    continue
+                self.acquired = False
+                raise WriterLockError(
+                    "ELM writer lock release could not verify the owned lock record.",
+                    self.record,
+                )
+            assert current is not None
+            if current.get("token") != self.token:
+                self.acquired = False
+                raise WriterLockError(
+                    "ELM writer lock ownership changed before release; foreign lock preserved.",
+                    current,
+                )
             try:
                 self.path.unlink()
             except FileNotFoundError:
-                pass
-        self.acquired = False
+                self.acquired = False
+                return
+            except PermissionError as exc:
+                if time.monotonic() < deadline:
+                    time.sleep(RELEASE_RETRY_INTERVAL)
+                    continue
+                self.acquired = False
+                raise WriterLockError(
+                    "ELM writer lock could not be released after bounded retries.",
+                    current,
+                ) from exc
+            self.acquired = False
+            return
 
     def __enter__(self) -> "WriterLock":
         return self.acquire()
