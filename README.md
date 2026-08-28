@@ -363,6 +363,9 @@ without provider calls, while `--claim-capable` requires explicit model/effort
 pinning before any crossover can be reported. The method and conservative claim
 rule are documented in
 [docs/CORPUS_SIZE_CURVE.md](docs/CORPUS_SIZE_CURVE.md).
+The completed five-size, 60-call Codex panel found one qualifying 192k cell but
+no sustained benchmark-qualified crossover because the 128k cell passed only
+five of six paired comparisons.
 
 ## Architecture boundary
 

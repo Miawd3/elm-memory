@@ -153,10 +153,10 @@ generalize to unseen tasks, another model, another reasoning effort, or another
 CLI version; that broader claim requires a separately frozen holdout panel.
 
 Answer scoring remains deterministic: the response must copy the single
-supporting sentence verbatim from the synthetic evidence. The oracle sentence
-is absent from the ELM and no-memory prompts and from the response schema. This
-avoids both brittle short-phrase framing and a model judge with hidden semantic
-latitude.
+supporting sentence from the synthetic evidence. Comparison is exact after
+case-folding and removal of trailing periods and whitespace; no paraphrase or
+semantic model judge is accepted. The oracle sentence is absent from the ELM
+and no-memory prompts and from the response schema.
 
 Real calls always require `--execute`. The harness refuses odd repeat counts,
 unbounded run matrices, prompts above the configured estimate cap, per-run
@@ -213,6 +213,46 @@ closed. The parser now distinguishes diagnostic items from actual tool calls;
 command execution, file changes, web/image tools, unapproved MCP calls, and
 unknown call-like items remain disqualifying, while a non-zero CLI exit remains
 an execution failure.
+
+## Five-size claim-capable panel
+
+The five-size Codex panel completed on 2026-08-27 from commit `dd18ae4`, using
+`codex-cli 0.149.0`, explicit model `gpt-5.6-sol`, and reasoning effort `low`.
+All 60/60 scheduled calls and 30/30 exact pairs passed answer, evidence,
+provider-usage, tool-provenance, schedule-completeness, and canonical-Markdown
+immutability gates. The run took 724.488 seconds.
+
+Two earlier fail-closed calibration attempts are excluded from these numbers.
+They exposed an evaluation-contract defect: a correct complete supporting
+sentence failed an oracle that expected only its shorter answer phrase. Before
+the accepted run, the protocol was changed to require the single supporting
+sentence verbatim, the deterministic exact matcher was restored, the offline
+suite passed, and a separate three-call ELM smoke passed all three cases. No
+failed provider cell was silently reclassified or counted in the accepted
+panel.
+
+| Target | Actual corpus | Active docs | Median ELM/full-corpus ratio | Below full corpus | Exact sign p | Qualified cell |
+| ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| 2,000 | 2,959 | 8 | 4.322003 | 0/6 | 1.000000 | No |
+| 8,000 | 8,978 | 14 | 3.438687 | 0/6 | 1.000000 | No |
+| 32,000 | 32,053 | 37 | 2.160081 | 0/6 | 1.000000 | No |
+| 128,000 | 128,365 | 133 | 0.895041 | 5/6 | 0.109375 | No |
+| 192,000 | 192,573 | 197 | 0.599836 | 6/6 | 0.015625 | Yes |
+
+The final and only accepted interpretation is **no benchmark-qualified
+crossover observed**. The 192,000 cell qualifies, but the preregistered
+persistence rule requires at least two consecutive qualifying sizes. At
+128,000, ELM was lower in five of six pairs, so that cell misses the exact-sign
+threshold even though its median ratio is below one. This locates a strong
+candidate region between the two largest sizes; it does not establish a
+crossover point.
+
+Across the complete size mix, the 30 ELM runs reported 2,916,383 input-plus-
+output tokens and the 30 full-corpus runs reported 2,086,186. These totals are
+useful for experiment budgeting but are not the crossover statistic because
+they pool different corpus sizes. The bounded result applies only to this
+synthetic three-case panel, model, reasoning effort, CLI version, and provider
+telemetry basis.
 
 ## Interpretation boundary
 

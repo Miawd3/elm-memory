@@ -46,8 +46,9 @@ schema contains only field types and limits; it contains no expected values or
 `const` oracle. ELM and no-memory prompts do not contain the expected answer or
 locator. The full-corpus prompt necessarily contains the evidence being tested.
 
-The evaluator checks the verbatim supporting sentence, source path, stable
-section key, and evidence status after the host returns. For a passing quality result, the report retains
+The evaluator checks the supporting sentence by normalized exact match, plus
+the source path, stable section key, and evidence status after the host returns.
+For a passing quality result, the report retains
 only the closed four-field synthetic response; failed or unexpected response
 payloads are discarded. Source locators must be relative Markdown paths without
 traversal. The remaining report contains allowlisted usage counters, versions,
