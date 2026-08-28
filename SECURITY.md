@@ -1,33 +1,33 @@
-# Security Policy
+# Security policy
 
-## Project status
+## Supported versions
 
-ELM is pre-alpha. The current CLI is intended for local, single-user project memory and must not be treated as a multi-tenant authorization system.
+| Version | Security fixes |
+| --- | --- |
+| 1.x | Yes |
+| Earlier development versions | No |
 
-## Supported surface
+## Report a vulnerability
 
-Security fixes currently target the latest `main` branch. A formal supported-version table will be added with the first public release.
+Use [GitHub private vulnerability reporting](https://github.com/Miawd3/elm-memory/security/advisories/new). Do not open a public issue for a vulnerability that could expose private memory or enable unsafe mutation.
 
-## Reporting
+Use synthetic data in reports. Never include real credentials, personal chat exports, private memory roots, or third-party data.
 
-Before a public GitHub repository exists, report vulnerabilities privately to the repository owner. After publication, enable GitHub private vulnerability reporting and replace this paragraph with the repository-specific reporting link.
+## Security boundary
 
-Do not include real credentials, private memory, personal chat exports, or exploit payloads containing third-party data in a report. Use the sanitized fixture or a minimal synthetic reproduction.
-
-## Security boundaries
-
+- ELM is a local, single-user tool. It is not a multi-tenant authorization service.
 - Retrieved memory is untrusted data, not executable policy.
-- SQLite indexes are disposable and contain copies of Markdown section text.
-- Archive exclusion is a retrieval default, not authentication.
-- Project and namespace filters are governance controls, not authentication.
-- Enabling the autonomous MCP profile is standing permission for bounded
-  `agent_curated` writes in its allowlisted projects. Those records are active
-  continuity, not verified truth; conflicts are deferred rather than silently
-  replacing current claims.
-- New autonomous claims have digest-bound validity leases constrained by a
-  standing default/maximum TTL policy. Expiry removes them from ordinary reads
-  and active quota without deleting canonical history; it is not secure erasure.
-- The single-writer lock coordinates cooperating local processes; it is not a
-  defense against a malicious process with the same filesystem permissions.
-- ELM does not guarantee secure erasure from Git history, backups, filesystem snapshots, or external copies.
-- The public fixture must never be replaced with a personal ELM snapshot.
+- The SQLite index contains copies of Markdown and must be protected like the canonical root.
+- Archive, project, namespace, history, and sensitivity filters are governance controls, not authentication.
+- Actor values are caller-supplied provenance labels, not authenticated identities.
+- Autonomous MCP is standing permission for bounded `agent_curated` writes in explicitly allowlisted projects. It cannot claim stronger authority.
+- Source-verified compare-and-swap proves that configured local bytes matched a digest at transition time. It does not prove authorship or semantic truth.
+- The writer lock coordinates cooperating processes; it does not stop a malicious process with the same filesystem permissions.
+- Deletion removes active canonical state and preserves a metadata-only tombstone. It cannot erase Git history, backups, snapshots, shell history, or provider logs.
+- Release checksums detect accidental or malicious file changes only when the checksum manifest came from the expected release.
+
+## Release artifacts
+
+Windows v1.0 artifacts are not code-signed. Verify SHA-256 checksums before use. The installer runs without administrator access and never owns or removes user memory roots.
+
+Linux installation scripts operate only inside the configured per-user runtime directory and command-link directory. Review the script before use when local policy requires it.

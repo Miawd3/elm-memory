@@ -2,19 +2,15 @@
 
 This cooperative compatibility demo shows two heterogeneous coding-agent hosts
 recovering the same accepted project decision from one sanitized ELM core. It
-never reads a personal ELM root and never exposes a mutation tool. The stricter
-tool-provenance experiment is documented in the
-[heterogeneous agent pilot](../../docs/HETEROGENEOUS_AGENT_PILOT.md).
+never reads a personal ELM root and never exposes a mutation tool. Evidence and
+claim limits are summarized in [Evaluation](../../docs/EVALUATION.md).
 
 ## Prerequisites
 
 - Python 3.11 or newer;
 - `elm-memory[mcp]` installed from this checkout;
 - authenticated `agy` and `codex` CLIs on `PATH`;
-- temporary Antigravity permissions `mcp(elm_demo/status)`,
-  `mcp(elm_demo/context)`, and `mcp(elm_demo/read)` in
-  `~/.gemini/antigravity-cli/settings.json`; restore the original settings file
-  byte-for-byte immediately after the run.
+- scoped permission for the three read-only demo tools: `status`, `context`, and `read`.
 
 Run:
 
@@ -38,8 +34,7 @@ both recover `PostgreSQL 17` from
 
 Expected answer and source values are evaluator-side only. The response schema
 does not contain them, and the agent workspaces do not contain the fixture. The
-cooperative host contract directs recovery through the read-only MCP boundary;
-the stricter pilot additionally audits streamed tool provenance.
+cooperative host contract directs recovery through the read-only MCP boundary.
 
 The report keeps only host versions, boolean checks, the sanitized source
 identity, and bounded error categories. It does not retain model conversations,
@@ -52,9 +47,9 @@ Antigravity in the same acceptance harness:
 python examples/two-agent-handoff/run_hosts.py --hosts claude codex --assert-pass
 ```
 
-Do not use a global auto-approve flag for this demo. Antigravity needs only the
-single MCP allow-rule above; the synthetic fixture and MCP configuration are
-created inside a temporary workspace and removed after the run.
+Do not use a global auto-approve flag for this demo. The synthetic fixture and
+MCP configuration are created inside a temporary workspace and removed after
+the run.
 
 This is a compatibility demonstration, not an access-control claim. A local
 host that can launch the server can read every item allowed by the configured

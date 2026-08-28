@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
+import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from _bootstrap import FixtureCopy, run_cli
 
@@ -13,7 +17,7 @@ except ModuleNotFoundError:  # The MCP adapter is an optional installation extra
     Client = None
 
 from elm_memory.governance import GovernanceError, ProposalLimits
-from elm_memory.mcp_server import ProposalServerPolicy, create_server
+from elm_memory.mcp_server import MCPCommandError, ProposalServerPolicy, _cli_prefix, create_server
 
 
 EXPECTED_TOOLS = {"search", "context", "read", "related", "history", "stats", "status"}
@@ -22,6 +26,33 @@ PROPOSAL_TOOLS = EXPECTED_TOOLS | {
     "list_memory_proposals",
     "preview_memory_transition",
 }
+
+
+class FrozenDistributionTests(unittest.TestCase):
+    def test_frozen_mcp_uses_sibling_cli_executable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="elm-frozen-") as temporary:
+            suffix = ".exe" if os.name == "nt" else ""
+            mcp_executable = Path(temporary) / f"elm-mcp{suffix}"
+            cli_executable = Path(temporary) / f"elm{suffix}"
+            cli_executable.touch()
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "executable", str(mcp_executable)),
+            ):
+                prefix = _cli_prefix()
+
+        self.assertEqual([str(cli_executable)], prefix)
+
+    def test_frozen_mcp_fails_closed_when_sibling_cli_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="elm-frozen-") as temporary:
+            suffix = ".exe" if os.name == "nt" else ""
+            mcp_executable = Path(temporary) / f"elm-mcp{suffix}"
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "executable", str(mcp_executable)),
+                self.assertRaisesRegex(MCPCommandError, "Repair or reinstall"),
+            ):
+                _cli_prefix()
 
 
 async def list_tools(root: Path):
