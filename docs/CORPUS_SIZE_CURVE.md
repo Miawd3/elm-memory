@@ -1,6 +1,6 @@
 # Corpus-size curve
 
-Status: executable local evidence harness; Phase 5B remains inactive
+Status: executable local evidence harness; Phase 5B is outside the active roadmap
 
 Date: 2026-08-27
 
@@ -264,7 +264,7 @@ effects; they do not erase them.
 
 The curve evaluates read-only retrieval efficiency only. It does not widen the
 MCP surface, enable accepted-state mutation, train a model, add embeddings, or
-advance Phase 5B.
+advance any accepted-authority or destructive mutation surface.
 
 The independent next stage is frozen in
 [HOLDOUT_CONFIRMATION.md](HOLDOUT_CONFIRMATION.md). It uses six unseen cases

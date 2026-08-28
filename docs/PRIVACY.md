@@ -1,4 +1,4 @@
-# Privacy Model — Phase 5A
+# Privacy Model — Phase 6A
 
 ELM keeps durable project memory in inspectable files under the configured root.
 `<root>/.elm/index.sqlite` contains copied Markdown text and governed-record
@@ -15,11 +15,17 @@ to access to the indexed memory.
   outline, read, and related operations, including direct IDs and stable keys.
 - Evidence records retain a source locator and SHA-256 hashes only. They use
   `retention: reference_only`; the CLI has no raw-payload import operation.
-- Proposals are candidate records. Acceptance requires an explicit lifecycle
-  command and accepted authority label; model inference is never auto-accepted.
+- Proposals are candidate records. The manual lifecycle requires an explicit
+  command and accepted authority label. The separate autonomous profile may
+  activate model-selected memory only as `agent_curated`, never as
+  user-ratified or repository-verified authority.
 - The MCP process default is read-only. The opt-in proposal-only profile may
   persist candidate text, source locators, and hashes for server-allowlisted
   projects, but it exposes no accepted-state transition.
+- The opt-in autonomous profile may persist normal-sensitivity candidate text,
+  source locators, hashes, and active `agent_curated` claims for allowlisted
+  projects. It is bounded by request, reference, rate, pending-record, and
+  active-memory quotas; it exposes no supersession, deletion, or policy tool.
 - Proposal-only input rejects raw-evidence fields, embedded URI credentials,
   and URI query strings. This reduces obvious leakage paths but cannot reliably
   detect every secret embedded in arbitrary candidate prose.
@@ -38,6 +44,8 @@ enforce operating-system access control.
 
 Actor values such as `human:reviewer` and `agent:researcher` are provenance
 labels supplied by the caller. Phase 3 does not authenticate that identity.
+The autonomous MCP adapter stamps `mcp:autonomous` server-side; this identifies
+the configured write path but is not a cryptographic user identity.
 
 Lifecycle events record metadata and hashes, not copies of source evidence.
 Temporary transaction backups are deleted after commit or successful rollback.

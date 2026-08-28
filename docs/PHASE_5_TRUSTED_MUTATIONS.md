@@ -1,10 +1,17 @@
 # Phase 5 — Trusted mutation design
 
-Status: Phase 5A implemented and locally verified; Phase 5B deferred and inactive
+Status: Phase 5A implemented; Phase 5B removed from the active product roadmap
 
 Date: 2026-08-26
 
 Ratified: 2026-08-26 by explicit user approval
+
+Superseded in part: on 2026-08-27 the user established that routine human
+approval must not gate AI memory. Phase 5B is therefore retained below as
+historical security research only. It is not a planned prerequisite or active
+implementation target. The replacement product direction is the bounded,
+operator-enabled autonomous-memory profile in
+[PHASE_6_AUTONOMOUS_MEMORY.md](PHASE_6_AUTONOMOUS_MEMORY.md).
 
 ## 1. Decision
 
@@ -592,9 +599,8 @@ not accepted as proof of identity or intent.
    A same-user mock signer is test infrastructure and does not satisfy this
    security gate.
 
-Phase 5A may ship independently and is the recommended next implementation
-slice. Phase 5B remains inactive until a concrete cross-platform verifier
-deployment is selected and independently reviewed.
+Phase 5A shipped independently. The Phase 5B verifier material below remains a
+historical design and is not an active implementation target.
 
 ## 16. Standards and implementation references
 
@@ -624,3 +630,15 @@ The user explicitly ratified these Phase 5A boundaries on 2026-08-26:
 
 This ratification authorizes implementation and validation of items 5A.1–5A.3.
 It does not authorize any MCP operation that changes accepted memory state.
+
+## 18. Superseding product decision
+
+The 2026-08-27 autonomous-memory decision preserves the implemented Phase 5A
+proposal-only surface but retires Phase 5B from the active roadmap. A person may
+inspect memory on demand, yet no per-record human signature or confirmation is
+required for the normal AI-memory loop.
+
+Phase 6A does not reuse the Phase 5B trust claim. It writes only
+`agent_curated` memory under an explicit project/limit policy, labels that
+memory as active but unverified, refuses silent conflict replacement, and keeps
+all destructive or authority-escalating operations outside MCP.

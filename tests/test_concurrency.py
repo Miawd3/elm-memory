@@ -84,6 +84,37 @@ class ConcurrencyTests(unittest.TestCase):
         self.assertEqual(4, attempts)
         self.assertFalse(lock_exists)
 
+    def test_acquire_retries_a_transient_windows_share_violation(self) -> None:
+        with FixtureCopy() as root:
+            lock = WriterLock(root, "acquire-retry", timeout=1, poll_interval=0.01)
+            real_open = os.open
+            attempts = 0
+
+            def flaky_open(*args, **kwargs):
+                nonlocal attempts
+                attempts += 1
+                if attempts < 4:
+                    raise PermissionError(13, "injected transient sharing violation")
+                return real_open(*args, **kwargs)
+
+            with patch("elm_memory.locking.os.open", side_effect=flaky_open):
+                lock.acquire()
+            lock.release()
+
+        self.assertEqual(4, attempts)
+
+    def test_acquire_normalizes_a_persistent_windows_share_violation(self) -> None:
+        with FixtureCopy() as root:
+            lock = WriterLock(root, "acquire-denied", timeout=0)
+            with patch(
+                "elm_memory.locking.os.open",
+                side_effect=PermissionError(13, "injected persistent sharing violation"),
+            ):
+                with self.assertRaisesRegex(WriterLockError, "bounded retries"):
+                    lock.acquire()
+
+        self.assertFalse(lock.acquired)
+
     def test_release_refuses_a_foreign_lock_token(self) -> None:
         with FixtureCopy() as root:
             lock = WriterLock(root, "ownership-check")

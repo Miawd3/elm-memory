@@ -1,6 +1,6 @@
 # Heterogeneous agent pilot
 
-Status: executable local pilot; Phase 5B remains inactive
+Status: executable local pilot; Phase 5B is outside the active roadmap
 
 Date: 2026-08-27
 
@@ -152,8 +152,8 @@ corpora at several token targets, counterbalances condition and size order,
 repeats exact within-route pairs, and requires conservative statistical and
 provenance gates before reporting a bounded crossover. The original no-memory
 control remains in this pilot; the curve focuses on the two conditions whose
-cost can cross as corpus size grows. Phase 5B remains separately blocked on an
-independent trusted verifier.
+cost can cross as corpus size grows. The former Phase 5B path is separately
+archived and does not block this evidence work.
 
 This workspace separation is an evaluation-integrity control, not a security
 boundary against a hostile local host. A client that can inspect its process

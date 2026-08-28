@@ -1,8 +1,8 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: active staged architecture; Phases 1–4 implemented and verified; Phase 5A implemented and locally verified
+Status: active staged architecture; Phases 1–5A verified; Phase 6A implemented locally
 
-Date: 2026-08-26
+Last updated: 2026-08-27
 
 Project: ELM — External Local Memory
 
@@ -21,10 +21,10 @@ Recommended definition:
 It helps heterogeneous agents recover bounded, source-linked project context without sharing full chat histories or depending on a hosted memory service.
 
 The first public release remains a clean, tested deterministic core with
-governed claims, a read-only interoperability adapter, and an opt-in
-proposal-only MCP profile. Authenticated actors, raw evidence payloads, and
-accepted-state MCP mutation remain later designs rather than implicit
-capabilities.
+governed claims, a read-only interoperability adapter, an opt-in proposal-only
+profile, and bounded `agent_curated` autonomous memory. Authenticated actors,
+raw evidence payloads, arbitrary authority escalation, and destructive MCP
+mutation remain unavailable.
 
 ## 2. Authority and status
 
@@ -40,7 +40,10 @@ capabilities.
 
 - Canonical project knowledge is stored in Markdown.
 - `.elm/index.sqlite` is disposable and rebuildable.
-- The current CLI provides `sync`, `rebuild`, `status`, `search`, `context`, `outline`, `read`, `related`, `history`, `stats`, `doctor`, governed lifecycle commands, explicit `ids assign`, root-identity bootstrap, and the proposal-only JSON contract used by MCP.
+- The current CLI provides `sync`, `rebuild`, `status`, `search`, `context`,
+  `outline`, `read`, `related`, `history`, `stats`, `doctor`, governed lifecycle
+  commands, explicit `ids assign`, root-identity bootstrap, and the closed
+  `proposal-submit` and `remember-submit` contracts used by MCP.
 - Retrieval uses SQLite FTS5 and section-level reads.
 - Archive, project, and namespace policy applies to search, outline, read, and related, including direct-ID reads.
 - SQLite integer IDs remain compatibility references; optional document UUIDs and derived section keys provide rebuild-stable public identity.
@@ -51,7 +54,12 @@ capabilities.
 - Phase 3 is merged and live-validated: immutable proposals, reference-only evidence metadata, canonical claim Markdown, explicit lifecycle transitions, valid/recorded-time history, contradictions, tombstones, and recoverable transactions.
 - Phase 4 is implemented and host-validated: a seven-tool read-only MCP adapter delegates to the CLI JSON contract, reports exact index readiness, and returns equivalent stable source identities through Antigravity/Gemini and Codex.
 - Phase 5A is implemented and locally verified: an explicit proposal-only profile adds propose/list/non-signable-preview, while the process default remains the exact Phase 4 read surface and accepted state is unreachable through MCP.
-- Raw evidence snapshots, accepted-state MCP mutation, embeddings, and model summarization remain deferred.
+- Phase 6A is implemented locally: an explicit autonomous profile adds one
+  bounded `remember_memory` tool, labels active writes `agent_curated`, reuses
+  exact duplicates, and defers conflicts or quota overflow.
+- Raw evidence snapshots, autonomous conflict resolution, destructive or
+  arbitrary-authority MCP mutation, embeddings, and model summarization remain
+  deferred.
 
 ### Provisional design
 
@@ -69,7 +77,7 @@ authorization and implementation validation.
 | Stable IDs were proposed for every object and every Markdown heading | Persist IDs only for durable entities; derive ordinary section locators and add explicit anchors only when needed. |
 | Multiple agents could write without a concurrency contract | ELM uses one canonical writer, atomic file replacement, short SQLite transactions, busy timeout, and a cross-platform writer lock. |
 | v1 combined identity, ACL, evidence, claims, temporal logic, MCP, and evaluation in one release | Work is split into independently useful, testable releases. |
-| Multi-agent memory was treated as unique positioning | Public differentiation is local inspectability, deterministic retrieval, human governance, exact sources, and no mandatory model/service. |
+| Multi-agent memory was treated as unique positioning | Public differentiation is local inspectability, deterministic retrieval, explicit authority, exact sources, autonomous continuity, and no mandatory model/service. |
 
 ## 4. Fixed invariants
 
@@ -651,10 +659,10 @@ Acceptance:
 
 Goal: expose proposals safely without letting an agent self-ratify memory.
 
-Status: Phase 5A ratified and implemented on 2026-08-26; local acceptance passes
-and hosted Windows/Linux CI remains the release gate. Phase 5B remains deferred
-and inactive. The detailed threat model, trust boundary, grant schema, and
-acceptance matrix are in
+Status: Phase 5A was ratified and implemented on 2026-08-26. Phase 5B was
+removed from the active product roadmap on 2026-08-27 because routine human
+approval must not gate AI memory. Its historical threat model and grant design
+remain in
 [PHASE_5_TRUSTED_MUTATIONS.md](PHASE_5_TRUSTED_MUTATIONS.md).
 
 Prerequisites:
@@ -663,8 +671,8 @@ Prerequisites:
 - concurrency and rollback tests pass;
 - Phase 5A has explicit server-side project allowlists, durable root/project
   quotas, submission idempotency, and compound canonical transactions;
-- Phase 5B additionally requires trusted actor binding outside the agent's
-  authority and a usable exact-operation review/ratification flow.
+- The archived Phase 5B design additionally required trusted actor binding
+  outside the agent's authority and an exact-operation ratification flow.
 
 Phase 5A opt-in proposal tools (the process default remains read-only):
 
@@ -674,7 +682,7 @@ list_memory_proposals
 preview_memory_transition
 ```
 
-Phase 5A has no accepted-state mutation tool. Phase 5B may later add one
+Phase 5A has no accepted-state mutation tool. The archived Phase 5B design specified one
 `execute_approved_transition` tool that consumes a short-lived, single-use,
 signed grant bound to the exact operation and canonical pre-state. It remains
 disabled unless a verifier outside the agent's authority is configured.
@@ -684,7 +692,21 @@ migration, and trust-policy/key management are not MCP tools. MCP host prompts
 and caller-supplied actor labels are defense in depth and provenance, not
 authenticated ratification.
 
-### Phase 6 — Optional semantic retrieval
+### Phase 6 — Autonomous agent memory
+
+Goal: let an agent preserve bounded, active continuity under a standing
+operator policy without per-item human approval.
+
+Phase 6A adds an explicit autonomous MCP profile with one append-only
+`remember_memory` tool. Its claims use `agent_curated` authority, remain
+untrusted data, rank below stronger current sources, reuse exact duplicates,
+and defer conflicts or quota overflow instead of silently replacing memory.
+
+Phase 6B will address autonomous expiry, conflict resolution, reversible
+supersession, and compaction. The implemented contract is in
+[PHASE_6_AUTONOMOUS_MEMORY.md](PHASE_6_AUTONOMOUS_MEMORY.md).
+
+### Phase 7 — Optional semantic retrieval
 
 Embeddings, reranking models, summaries, graph infrastructure, and learned controllers remain deferred.
 
@@ -736,14 +758,17 @@ These tests protect the architectural invariants rather than just code coverage:
 The first share-worthy demonstration should be small and reproducible:
 
 1. A researcher agent reads a synthetic repository and creates a proposal with exact source references.
-2. A human accepts the proposal.
+2. An operator-enabled autonomous profile activates it as `agent_curated`
+   memory without interrupting the user.
 3. The first session ends.
 4. A different coding agent requests a bounded ELM context packet.
 5. It receives accepted project state, exact source locators, status, and token estimate.
 6. It completes a small repository task.
 7. A reviewer finds that repository truth changed.
-8. ELM records a new proposal and supersedes the old claim after ratification.
-9. A current query returns the new state; a historical query returns the old state with provenance.
+8. ELM defers the conflict without replacing the active value; a later Phase 6B
+   policy resolves it from fresher evidence with reversible provenance.
+9. A current query remains deterministic; a historical query exposes the
+   candidate and lifecycle trail.
 
 The sanitized Phase 3 lifecycle smoke test exercises the governed state changes
 through the CLI. The Phase 4 host harness then gives the resulting accepted
@@ -781,15 +806,17 @@ first public tag.
 
 ## 21. Immediate next implementation slice
 
-Phase 4 is complete. Phase 5A proposal-only MCP mutation was ratified,
-implemented, and locally verified on 2026-08-26.
+Phases 4 and 5A are complete. Phase 6A bounded autonomous memory was implemented
+locally on 2026-08-27 after the per-item human-approval path was removed from
+the active roadmap.
 
-The active gate is **Phase 5A release validation** as defined in
-[PHASE_5_TRUSTED_MUTATIONS.md](PHASE_5_TRUSTED_MUTATIONS.md) and
-[PHASE_5A_READINESS.md](PHASE_5A_READINESS.md). Accepted-state MCP mutation
-requires a later, separately authorized Phase 5B verifier deployment. Direct
-arbitrary Markdown writes, raw evidence snapshots, embeddings, authenticated
-multi-user scopes, and model summarization remain outside the Phase 5A gate.
+The active gate is **Phase 6A hosted validation** as defined in
+[PHASE_6_AUTONOMOUS_MEMORY.md](PHASE_6_AUTONOMOUS_MEMORY.md). The next
+implementation slice is Phase 6B autonomous maintenance: expiry, source
+freshness, conflict resolution, reversible supersession, and bounded
+compaction. Direct arbitrary Markdown writes, raw evidence snapshots,
+embeddings, authenticated multi-user scopes, and model summarization remain
+outside this gate.
 
 ## 22. Supersession rule
 

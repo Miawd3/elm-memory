@@ -37,6 +37,7 @@ from .identity import (
 )
 from .governance import (
     ACCEPTED_AUTHORITIES,
+    AgentMemoryLimits,
     EVIDENCE_KINDS,
     PROPOSAL_AUTHORITIES,
     REASON_CODES,
@@ -52,9 +53,11 @@ from .governance import (
     history_view,
     governance_projection_digest,
     load_root_identity,
+    root_identity_path,
     pending_transactions,
     recover_governance_transactions,
     reject_or_defer_proposal,
+    remember_memory_bundle,
     supersede_claim,
     sync_governance_projection,
     submit_proposal_bundle,
@@ -690,7 +693,9 @@ def search_sections(
         JOIN documents d ON d.id=s.document_id
         LEFT JOIN claims c ON c.document_id=d.id
         WHERE {' AND '.join(conditions)}
-        ORDER BY score DESC, d.last_updated DESC
+        ORDER BY score DESC,
+                 CASE WHEN c.authority='agent_curated' THEN 1 ELSE 0 END,
+                 d.last_updated DESC
         LIMIT ?
     """
     params.append(args.limit if limit is None else limit)
@@ -710,7 +715,10 @@ def command_search(args, con: sqlite3.Connection, root: Path):
     results = search_sections(con, args.query, args)
     public_results = []
     for result in results:
-        item = dict(result)
+        item = _annotate_memory_row({
+            **result,
+            "claim_status": result.get("status") if result.get("claim_id") else None,
+        })
         item.pop("text", None)
         public_results.append(item)
     emit({"query": args.query, "count": len(public_results), "results": public_results}, args.json)
@@ -887,7 +895,34 @@ def command_traces_cleanup(args, root: Path) -> None:
     emit(result, args.json)
 
 
-def resolve_document(con: sqlite3.Connection, ref: str, args) -> sqlite3.Row:
+def _memory_authority_label(item: dict) -> str:
+    claim_authority = item.get("claim_authority")
+    if not claim_authority:
+        return "project_document"
+    labels = {
+        "agent_curated": "agent_curated_memory",
+        "ratified_project_decision": "ratified_project_decision_memory",
+        "user_ratified": "user_ratified_memory",
+        "verified_repository_state": "verified_repository_memory",
+    }
+    label = labels.get(str(claim_authority), "governed_memory")
+    moment = now_iso()
+    current = (
+        item.get("claim_status") == "accepted"
+        and (not item.get("valid_from") or item["valid_from"] <= moment)
+        and (not item.get("valid_to") or item["valid_to"] > moment)
+    )
+    return label if current else f"historical_{label}"
+
+
+def _annotate_memory_row(row: sqlite3.Row | dict) -> dict:
+    item = dict(row)
+    item["authority"] = _memory_authority_label(item)
+    item["content_role"] = "untrusted_memory_data"
+    return item
+
+
+def resolve_document(con: sqlite3.Connection, ref: str, args) -> dict:
     reference_conditions: list[str]
     reference_params: list[object]
     if ref.isdigit():
@@ -906,15 +941,18 @@ def resolve_document(con: sqlite3.Connection, ref: str, args) -> sqlite3.Row:
     policy_conditions, policy_params = _policy_sql("d", args)
     conditions = reference_conditions + policy_conditions
     row = con.execute(
-        f"SELECT d.* FROM documents d WHERE {' AND '.join(conditions)}",
+        f"""SELECT d.*,c.claim_id,c.status AS claim_status,
+                   c.authority AS claim_authority,c.valid_from,c.valid_to
+            FROM documents d LEFT JOIN claims c ON c.document_id=d.id
+            WHERE {' AND '.join(conditions)}""",
         reference_params + policy_params,
     ).fetchone()
     if row is None:
         raise SystemExit(f"Document not found under the current read policy: {ref}")
-    return row
+    return _annotate_memory_row(row)
 
 
-def resolve_section(con: sqlite3.Connection, ref: str, args) -> sqlite3.Row:
+def resolve_section(con: sqlite3.Connection, ref: str, args) -> dict:
     if ref.isdigit():
         reference = "s.id=?"
         value: object = int(ref)
@@ -925,14 +963,16 @@ def resolve_section(con: sqlite3.Connection, ref: str, args) -> sqlite3.Row:
     conditions = [reference] + policy_conditions
     row = con.execute(
         f"""SELECT s.*,d.path,d.document_uid,d.namespace,d.title,d.project,d.status,
-                   d.last_updated,d.is_archive
+                   d.last_updated,d.is_archive,c.claim_id,c.status AS claim_status,
+                   c.authority AS claim_authority,c.valid_from,c.valid_to
             FROM sections s JOIN documents d ON d.id=s.document_id
+            LEFT JOIN claims c ON c.document_id=d.id
             WHERE {' AND '.join(conditions)}""",
         [value] + policy_params,
     ).fetchone()
     if row is None:
         raise SystemExit(f"Section not found under the current read policy: {ref}")
-    return row
+    return _annotate_memory_row(row)
 
 
 def command_outline(args, con: sqlite3.Connection, root: Path):
@@ -944,12 +984,12 @@ def command_outline(args, con: sqlite3.Connection, root: Path):
            FROM sections WHERE document_id=? ORDER BY ordinal""",
         (doc["id"],),
     ).fetchall()
-    emit({"document": dict(doc), "sections": [dict(r) for r in rows]}, args.json)
+    emit({"document": doc, "sections": [dict(r) for r in rows]}, args.json)
 
 
 def command_read(args, con: sqlite3.Connection, root: Path):
     _require_stable_governance(root)
-    emit(dict(resolve_section(con, args.section, args)), args.json)
+    emit(resolve_section(con, args.section, args), args.json)
 
 
 def command_related(args, con: sqlite3.Connection, root: Path):
@@ -959,8 +999,12 @@ def command_related(args, con: sqlite3.Connection, root: Path):
         """SELECT l.relation_type,l.anchor_text,l.target_path,d.id AS target_id,
                   d.document_uid AS target_uid,d.namespace AS target_namespace,
                   d.project AS target_project,d.is_archive AS target_is_archive,
-                  d.title AS target_title,d.status AS target_status
+                  d.title AS target_title,d.status AS target_status,
+                  c.claim_id AS target_claim_id,c.status AS target_claim_status,
+                  c.authority AS target_claim_authority,c.valid_from AS target_valid_from,
+                  c.valid_to AS target_valid_to
            FROM links l LEFT JOIN documents d ON d.id=l.target_document_id
+           LEFT JOIN claims c ON c.document_id=d.id
            WHERE l.source_document_id=? ORDER BY l.relation_type,l.target_path""", (doc["id"],)
     )]
     outgoing = [
@@ -977,14 +1021,33 @@ def command_related(args, con: sqlite3.Connection, root: Path):
     incoming = [dict(r) for r in con.execute(
         f"""SELECT l.relation_type,l.anchor_text,s.id AS source_id,s.document_uid AS source_uid,
                   s.namespace AS source_namespace,s.path AS source_path,s.title AS source_title,
-                  s.status AS source_status
+                  s.status AS source_status,c.claim_id AS source_claim_id,
+                  c.status AS source_claim_status,c.authority AS source_claim_authority,
+                  c.valid_from AS source_valid_from,c.valid_to AS source_valid_to
            FROM links l JOIN documents s ON s.id=l.source_document_id
+           LEFT JOIN claims c ON c.document_id=s.id
            WHERE l.target_document_id=?
              {('AND ' + ' AND '.join(incoming_conditions)) if incoming_conditions else ''}
            ORDER BY s.path""",
         [doc["id"]] + incoming_params,
     )]
-    emit({"document": dict(doc), "outgoing": outgoing, "incoming": incoming}, args.json)
+    for row in outgoing:
+        row["target_authority"] = _memory_authority_label({
+            "claim_authority": row.get("target_claim_authority"),
+            "claim_status": row.get("target_claim_status"),
+            "valid_from": row.get("target_valid_from"),
+            "valid_to": row.get("target_valid_to"),
+        })
+        row["target_content_role"] = "untrusted_memory_data"
+    for row in incoming:
+        row["source_authority"] = _memory_authority_label({
+            "claim_authority": row.get("source_claim_authority"),
+            "claim_status": row.get("source_claim_status"),
+            "valid_from": row.get("source_valid_from"),
+            "valid_to": row.get("source_valid_to"),
+        })
+        row["source_content_role"] = "untrusted_memory_data"
+    emit({"document": doc, "outgoing": outgoing, "incoming": incoming}, args.json)
 
 
 def command_stats(args, con: sqlite3.Connection, root: Path):
@@ -1302,6 +1365,94 @@ def command_proposal_submit(args, con: sqlite3.Connection, root: Path) -> None:
             "healthy": not bool(indexed["errors"]),
             "errors": indexed["errors"],
             "files_seen": indexed["files_seen"],
+        }
+    emit(result, args.json)
+
+
+def command_remember_submit(args, con: sqlite3.Connection, root: Path) -> None:
+    raw = sys.stdin.buffer.read(args.max_request_bytes + 1)
+    if len(raw) > args.max_request_bytes:
+        raise GovernanceError(
+            f"autonomous memory request exceeds the {args.max_request_bytes}-byte limit."
+        )
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise GovernanceError("autonomous memory stdin must be UTF-8 JSON.") from exc
+    try:
+        request = parse_closed_json(text)
+    except CanonicalJSONError as exc:
+        raise GovernanceError(str(exc)) from exc
+    if not isinstance(request, dict):
+        raise GovernanceError("autonomous memory request must be one JSON object.")
+    proposal_limits = ProposalLimits(
+        max_request_bytes=args.max_request_bytes,
+        max_reference_count=args.max_reference_count,
+        max_pending_per_project=args.max_pending_per_project,
+        max_pending_records_root=args.max_pending_records_root,
+        max_pending_bytes_per_project=args.max_pending_bytes_per_project,
+        max_pending_bytes_root=args.max_pending_bytes_root,
+    )
+    memory_limits = AgentMemoryLimits(
+        max_active_per_project=args.max_active_per_project,
+        max_active_root=args.max_active_root,
+    )
+    result = remember_memory_bundle(
+        root,
+        request=request,
+        request_bytes=len(raw),
+        allowed_projects=set(args.allow_project),
+        proposal_limits=proposal_limits,
+        memory_limits=memory_limits,
+        lock_timeout=args.lock_timeout,
+        recover_stale=args.recover_stale_lock,
+    )
+    try:
+        indexed = _sync_from_args(args, con, root)
+    except Exception as exc:
+        kind = (
+            "writer_lock_unavailable"
+            if isinstance(exc, WriterLockError)
+            else "projection_refresh_failed"
+        )
+        message = (
+            str(exc)
+            if isinstance(exc, WriterLockError)
+            else (
+                "Canonical autonomous memory committed, but the disposable projection refresh "
+                "failed; run `elm sync` or `elm rebuild` after resolving the local index error."
+            )
+        )
+        try:
+            canonical_digest = governance_projection_digest(root)
+        except Exception:
+            canonical_digest = None
+        result["projection"] = {
+            "healthy": False,
+            "errors": [{"kind": kind, "message": message}],
+            "files_seen": None,
+            "checked_at": now_iso(),
+            "governance_projection_sha256": None,
+            "canonical_governance_sha256": canonical_digest,
+            "governance_projection_current": False,
+            "linearizable_postcondition": False,
+        }
+    else:
+        projected_row = con.execute(
+            "SELECT value FROM elm_meta WHERE key='governance_projection_sha256'"
+        ).fetchone()
+        projected_digest = str(projected_row[0]) if projected_row else None
+        canonical_digest = governance_projection_digest(root)
+        projection_current = projected_digest == canonical_digest
+        result["projection"] = {
+            "healthy": not bool(indexed["errors"]) and projection_current,
+            "errors": indexed["errors"],
+            "files_seen": indexed["files_seen"],
+            "checked_at": now_iso(),
+            "governance_projection_sha256": projected_digest,
+            "canonical_governance_sha256": canonical_digest,
+            "governance_projection_current": projection_current,
+            "linearizable_postcondition": False,
         }
     emit(result, args.json)
 
@@ -1698,6 +1849,13 @@ def add_common(p):
         action="store_true",
         help="Explicitly recover a lock whose owner is gone or whose age exceeds the stale threshold.",
     )
+    p.add_argument("--require-current-projection", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument(
+        "--consistency-profile",
+        choices=("proposal-only", "autonomous"),
+        help=argparse.SUPPRESS,
+    )
+    p.add_argument("--expected-root-identity-sha256", help=argparse.SUPPRESS)
 
 
 def add_read_policy(p) -> None:
@@ -1828,6 +1986,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-pending-bytes-per-project", type=int, default=4 * 1024 * 1024)
     p.add_argument("--max-pending-bytes-root", type=int, default=32 * 1024 * 1024)
 
+    p = sub.add_parser(
+        "remember-submit",
+        help="Activate one bounded agent-curated memory from UTF-8 JSON on stdin.",
+    )
+    add_common(p)
+    p.add_argument("--request-stdin", action="store_true", required=True)
+    p.add_argument("--allow-project", action="append", required=True)
+    p.add_argument("--max-request-bytes", type=int, default=65_536)
+    p.add_argument("--max-reference-count", type=int, default=16)
+    p.add_argument("--max-pending-per-project", type=int, default=256)
+    p.add_argument("--max-pending-records-root", type=int, default=2_048)
+    p.add_argument("--max-pending-bytes-per-project", type=int, default=4 * 1024 * 1024)
+    p.add_argument("--max-pending-bytes-root", type=int, default=32 * 1024 * 1024)
+    p.add_argument("--max-active-per-project", type=int, default=512)
+    p.add_argument("--max-active-root", type=int, default=4_096)
+
     p = sub.add_parser("proposals", help="Inspect the immutable proposal queue and derived status.")
     proposal_sub = p.add_subparsers(dest="proposals_command", required=True)
     listing = proposal_sub.add_parser("list", help="List proposals under optional project/status filters.")
@@ -1910,6 +2084,105 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _require_atomic_indexed_read(args, root: Path) -> None:
+    if args.command not in {"search", "context", "outline", "read", "related", "stats"}:
+        raise GovernanceError("Current-projection guarding is valid only for indexed reads.")
+    if args.consistency_profile is None:
+        raise GovernanceError("A consistency profile is required for a guarded indexed read.")
+    expected_identity = args.expected_root_identity_sha256
+    if expected_identity:
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", expected_identity):
+            raise GovernanceError("Expected root identity digest must be SHA-256 hex.")
+        load_root_identity(root, required=True)
+        try:
+            current_identity = hashlib.sha256(root_identity_path(root).read_bytes()).hexdigest()
+        except OSError as exc:
+            raise GovernanceError("ELM root identity cannot be verified.") from exc
+        if current_identity != expected_identity.lower():
+            raise GovernanceError(
+                "ELM root identity changed after server startup; restart is refused."
+            )
+    snapshot = status_snapshot(root)
+    if not snapshot.get("healthy"):
+        readiness_label = (
+            "proposal mutation"
+            if args.consistency_profile == "proposal-only"
+            else "memory mutation"
+        )
+        raise GovernanceError(
+            f"ELM is not ready for {readiness_label}; run `elm sync` or `elm rebuild` "
+            "outside MCP and verify `elm doctor --no-sync`."
+        )
+
+
+def _dispatch_command(args, con: sqlite3.Connection, root: Path, parser) -> None:
+    if args.command == "sync":
+        emit(_sync_from_args(args, con, root, force=args.force), args.json)
+    elif args.command == "rebuild":
+        command_rebuild(args, con, root)
+    elif args.command == "search":
+        command_search(args, con, root)
+    elif args.command == "context":
+        command_context(args, con, root)
+    elif args.command == "outline":
+        command_outline(args, con, root)
+    elif args.command == "read":
+        command_read(args, con, root)
+    elif args.command == "related":
+        command_related(args, con, root)
+    elif args.command == "stats":
+        command_stats(args, con, root)
+    elif args.command == "doctor":
+        command_doctor(args, con, root)
+    elif args.command == "evidence" and args.evidence_command == "add":
+        command_evidence_add(args, con, root)
+    elif args.command == "propose":
+        command_propose(args, con, root)
+    elif args.command == "proposal-submit":
+        command_proposal_submit(args, con, root)
+    elif args.command == "remember-submit":
+        command_remember_submit(args, con, root)
+    elif args.command == "proposals" and args.proposals_command == "list":
+        command_proposals_list(args, con, root)
+    elif args.command == "proposal-preview":
+        command_proposal_preview(args, con, root)
+    elif args.command == "accept":
+        command_accept(args, con, root)
+    elif args.command == "reject":
+        command_reject_or_defer(args, con, root, "reject")
+    elif args.command == "defer":
+        command_reject_or_defer(args, con, root, "defer")
+    elif args.command == "dispute":
+        command_dispute(args, con, root)
+    elif args.command == "supersede":
+        command_supersede(args, con, root)
+    elif args.command == "delete":
+        command_delete(args, con, root)
+    elif args.command == "history":
+        command_history(args, con, root)
+    elif args.command == "recover":
+        command_recover(args, con, root)
+    else:
+        parser.error("unknown command")
+
+
+def _run_command_with_connection(args, root: Path, parser, *, guarded: bool) -> None:
+    if guarded or args.command == "read" or bool(getattr(args, "no_sync", False)):
+        con = connect_readonly(root, lock_timeout=args.lock_timeout)
+    else:
+        con = connect(
+            root,
+            lock_timeout=args.lock_timeout,
+            recover_stale=args.recover_stale_lock,
+        )
+    try:
+        if guarded:
+            _require_atomic_indexed_read(args, root)
+        _dispatch_command(args, con, root, parser)
+    finally:
+        con.close()
+
+
 def main() -> int:
     configure_standard_streams()
     parser = build_parser()
@@ -1958,14 +2231,16 @@ def main() -> int:
             return 2
 
     try:
-        if args.command == "read" or bool(getattr(args, "no_sync", False)):
-            con = connect_readonly(root, lock_timeout=args.lock_timeout)
-        else:
-            con = connect(
+        if getattr(args, "require_current_projection", False):
+            with WriterLock(
                 root,
-                lock_timeout=args.lock_timeout,
+                "consistent-index-read",
+                timeout=args.lock_timeout,
                 recover_stale=args.recover_stale_lock,
-            )
+            ):
+                _run_command_with_connection(args, root, parser, guarded=True)
+        else:
+            _run_command_with_connection(args, root, parser, guarded=False)
     except ReadOnlyIndexError as exc:
         emit_error("read_only_index_not_ready", str(exc), args.json)
         return 2
@@ -1978,65 +2253,10 @@ def main() -> int:
     except SchemaMigrationError as exc:
         emit_error("index_schema_migration_failed", str(exc), args.json)
         return 2
-    try:
-        if args.command == "sync":
-            emit(_sync_from_args(args, con, root, force=args.force), args.json)
-        elif args.command == "rebuild":
-            command_rebuild(args, con, root); return 0
-        elif args.command == "search":
-            command_search(args, con, root)
-        elif args.command == "context":
-            command_context(args, con, root)
-        elif args.command == "outline":
-            command_outline(args, con, root)
-        elif args.command == "read":
-            command_read(args, con, root)
-        elif args.command == "related":
-            command_related(args, con, root)
-        elif args.command == "stats":
-            command_stats(args, con, root)
-        elif args.command == "doctor":
-            command_doctor(args, con, root)
-        elif args.command == "evidence" and args.evidence_command == "add":
-            command_evidence_add(args, con, root)
-        elif args.command == "propose":
-            command_propose(args, con, root)
-        elif args.command == "proposal-submit":
-            command_proposal_submit(args, con, root)
-        elif args.command == "proposals" and args.proposals_command == "list":
-            command_proposals_list(args, con, root)
-        elif args.command == "proposal-preview":
-            command_proposal_preview(args, con, root)
-        elif args.command == "accept":
-            command_accept(args, con, root)
-        elif args.command == "reject":
-            command_reject_or_defer(args, con, root, "reject")
-        elif args.command == "defer":
-            command_reject_or_defer(args, con, root, "defer")
-        elif args.command == "dispute":
-            command_dispute(args, con, root)
-        elif args.command == "supersede":
-            command_supersede(args, con, root)
-        elif args.command == "delete":
-            command_delete(args, con, root)
-        elif args.command == "history":
-            command_history(args, con, root)
-        elif args.command == "recover":
-            command_recover(args, con, root)
-        else:
-            parser.error("unknown command")
-    except WriterLockError as exc:
-        emit_error("writer_lock_unavailable", str(exc), args.json, exc.record)
-        return 2
     except (ValueError, GovernanceError) as exc:
         code = "governance_failed" if isinstance(exc, GovernanceError) else "invalid_argument"
         emit_error(code, str(exc), args.json)
         return 2
-    finally:
-        try:
-            con.close()
-        except Exception:
-            pass
     return 0
 
 

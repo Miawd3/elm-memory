@@ -162,6 +162,14 @@ class WriterLock:
         while True:
             try:
                 descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except PermissionError as exc:
+                if time.monotonic() < deadline:
+                    time.sleep(self.poll_interval)
+                    continue
+                raise WriterLockError(
+                    "ELM writer lock could not be acquired after bounded retries.",
+                    last_record,
+                ) from exc
             except FileExistsError:
                 last_record = self._read_record()
                 if self._recover_if_allowed(last_record):

@@ -2,12 +2,13 @@
 
 ELM is a local, inspectable project-memory and deterministic retrieval layer for coding agents. Canonical knowledge stays in Markdown; SQLite FTS5 is a disposable index that can be deleted and rebuilt.
 
-This repository is in **Phase 5A / pre-alpha**. In addition to deterministic
+This repository is in **Phase 6A / pre-alpha**. In addition to deterministic
 retrieval, stable identity, and bounded context packets, it now implements a
 governed proposal-to-claim lifecycle with reference-only evidence metadata,
 valid/recorded-time history, recoverable canonical transactions, the Phase 4
-read-only MCP adapter, and an opt-in proposal-only MCP profile. Raw evidence
-snapshots and accepted-state MCP mutation remain deferred.
+read-only MCP adapter, an opt-in proposal-only profile, and a separate opt-in
+autonomous profile for bounded low-authority agent memory. Raw evidence
+snapshots and arbitrary accepted-state MCP mutation remain unavailable.
 
 ## Why ELM
 
@@ -114,7 +115,7 @@ Available commands:
 sync  rebuild  status  search  context  outline  read  related  stats  doctor
 evidence add  propose  proposals list  accept  reject  defer  dispute
 supersede  delete  history  recover
-root-id init  proposal-submit  proposal-preview
+root-id init  proposal-submit  remember-submit  proposal-preview
 ids assign  traces cleanup
 ```
 
@@ -191,7 +192,7 @@ The exact Phase 2 contract is documented in
 
 ## Governed memory lifecycle
 
-Phase 3 separates candidate generation from ratification. Proposals and evidence
+Phase 3 provides a provenance-preserving candidate and claim lifecycle. Proposals and evidence
 references are immutable JSON records; accepted claims are canonical Markdown;
 lifecycle events and metadata-only tombstones preserve provenance. SQLite only
 projects this state and can be deleted and rebuilt.
@@ -213,7 +214,8 @@ elm accept PROPOSAL_ID --root /path/to/memory \
   --actor human:reviewer --authority user_ratified
 ```
 
-The agent that creates a proposal does not gain authority to accept it. Use a
+In the governed/manual workflow, the agent that creates a proposal does not gain
+human or repository-verification authority by accepting it. Use a
 new proposal plus `elm supersede OLD_CLAIM_ID NEW_PROPOSAL_ID` to change an
 accepted fact. Ordinary reads hide disputed, superseded, future-effective,
 expired, and deleted claims; `--include-history` or `elm history` is an explicit
@@ -299,6 +301,54 @@ executor identity or policy digest and cannot authorize a transition.
 
 The full threat model and contract are in
 [docs/PHASE_5_TRUSTED_MUTATIONS.md](docs/PHASE_5_TRUSTED_MUTATIONS.md).
+
+## Opt-in autonomous memory
+
+Phase 6A removes per-item human approval from the normal AI-memory loop. An
+operator enables one bounded profile for explicit projects; agents may then call
+`remember_memory` without interrupting the user. The tool creates active
+canonical memory with authority `agent_curated`, which retrieval labels
+`agent_curated_memory`. It remains untrusted data and ranks below current user
+instruction, verified repository state, and stronger governed memory.
+
+```bash
+elm-mcp --root /path/to/memory \
+  --mutation-mode autonomous \
+  --allow-project orion \
+  --max-active-per-project 512 \
+  --max-active-root 4096
+```
+
+The autonomous surface is exactly the seven read tools plus
+`remember_memory`. It does not expose proposal review tools or any operation for
+supersession, dispute, deletion, recovery, synchronization, identity, arbitrary
+files, or policy changes.
+
+Exact request replay produces one active claim. A different submission with the
+same active value reuses the existing claim; a conflicting value is deferred
+instead of overwriting it; exhausted quotas also defer the candidate. Only
+`normal` sensitivity and reference-only evidence are accepted. Human inspection
+remains available through canonical Markdown and `history`, but is not a write
+prerequisite.
+
+Search and exact reads expose governed claim identity, raw authority, a
+normalized authority label, and the `untrusted_memory_data` role. In
+proposal-only and autonomous profiles, indexed reads fail closed if canonical
+governance is newer than the SQLite projection. The freshness check and query
+run under one canonical writer lock, closing the check/read race. Diagnostic
+`status` and canonical `history` remain available so the disposable index can
+be repaired without losing the write.
+
+Phase 6A deliberately serializes mutation-profile indexed reads for
+correctness. The default read-only profile retains concurrent no-sync reads; a
+future epoch protocol may recover mutation-profile read concurrency without
+reopening the freshness race.
+
+The product decision, authority ordering, lifecycle, limits, failure behavior,
+and Phase 6B maintenance boundary are documented in
+[docs/PHASE_6_AUTONOMOUS_MEMORY.md](docs/PHASE_6_AUTONOMOUS_MEMORY.md). The
+former Phase 5B signed per-operation approval design is retained only as
+historical security research and is not on the active roadmap.
 
 ## Agent Skill
 
@@ -399,8 +449,9 @@ Phase order:
 3. governed proposals, evidence references, claims, and temporal history;
 4. read-only MCP and heterogeneous-host validation;
 5. Phase 5A: opt-in proposal-only MCP with no accepted-state tool (implemented);
-6. Phase 5B: signed accepted-state execution only after a separate verifier is selected;
-7. optional semantic retrieval only after measured deterministic failures.
+6. Phase 6A: opt-in bounded autonomous `agent_curated` memory (implemented locally);
+7. Phase 6B: autonomous conflict, expiry, supersession, and compaction policy;
+8. optional semantic retrieval only after measured deterministic failures.
 
 ## License, privacy, and publication status
 
@@ -425,4 +476,5 @@ is recorded in [docs/PHASE_4_READINESS.md](docs/PHASE_4_READINESS.md); the Phase
 - ELM performs no LLM summarization and cannot recover synonyms absent from the lexical corpus;
 - evidence records contain locators and hashes only; ELM does not retain or verify source payload availability;
 - deletion removes active canonical/derived ELM state but cannot erase Git history, filesystem snapshots, or external backups;
-- there is no raw evidence store, authenticated multi-user service, or accepted-state MCP mutation API.
+- there is no raw evidence store, authenticated multi-user service, autonomous
+  conflict resolver, or arbitrary accepted-state MCP mutation API.

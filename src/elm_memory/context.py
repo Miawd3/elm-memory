@@ -79,6 +79,12 @@ def _packet_class(candidate: dict, status: str) -> str:
 def _authority(candidate: dict, packet_class: str, status: str) -> str:
     if candidate.get("is_archive"):
         return "historical_memory"
+    if candidate.get("claim_authority") == "agent_curated":
+        if candidate.get("contradiction"):
+            return "agent_curated_conflicting_memory"
+        if packet_class == "conflicts_or_provisional" or status.casefold() not in _ACCEPTED_STATUSES:
+            return "provisional_agent_curated_memory"
+        return "agent_curated_memory"
     if packet_class == "conflicts_or_provisional" or status.casefold() not in _ACCEPTED_STATUSES:
         if candidate.get("contradiction") and status.casefold() in _ACCEPTED_STATUSES:
             return "accepted_conflicting_memory"

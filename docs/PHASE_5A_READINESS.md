@@ -20,7 +20,8 @@ seven-tool read-only MCP surface. An operator must explicitly select
 
 There is no MCP tool for accept, reject, defer, supersede, dispute, delete,
 recover, sync, rebuild, document-ID migration, root-ID bootstrap, or policy/key
-management. Phase 5B accepted-state execution remains unimplemented.
+management. Phase 5B accepted-state execution remains unimplemented and is no
+longer an active roadmap item.
 
 ## Canonical changes
 

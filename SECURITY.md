@@ -20,6 +20,10 @@ Do not include real credentials, private memory, personal chat exports, or explo
 - SQLite indexes are disposable and contain copies of Markdown section text.
 - Archive exclusion is a retrieval default, not authentication.
 - Project and namespace filters are governance controls, not authentication.
+- Enabling the autonomous MCP profile is standing permission for bounded
+  `agent_curated` writes in its allowlisted projects. Those records are active
+  continuity, not verified truth; conflicts are deferred rather than silently
+  replacing current claims.
 - The single-writer lock coordinates cooperating local processes; it is not a
   defense against a malicious process with the same filesystem permissions.
 - ELM does not guarantee secure erasure from Git history, backups, filesystem snapshots, or external copies.
