@@ -270,4 +270,8 @@ The independent next stage is frozen in
 [HOLDOUT_CONFIRMATION.md](HOLDOUT_CONFIRMATION.md). It uses six unseen cases
 across three projects, project-scoped near-miss growth, case-level statistics,
 no-memory leakage controls, and a context-safe 208k persistence point. Its
-passing offline preflight is not yet a provider result.
+preregistered 78-call Codex run later qualified all three holdout sizes and
+confirmed sustained large-corpus token advantage within that independent
+synthetic panel. The holdout result does not retroactively convert this
+development curve into population evidence or identify an exact universal
+crossover.

@@ -1,6 +1,6 @@
 # Holdout confirmation panel
 
-Status: frozen offline contract and passing local preflight; no confirmatory provider result yet
+Status: completed confirmatory provider panel; Phase 5B remains inactive
 
 Date: 2026-08-27
 
@@ -151,15 +151,40 @@ with `--execute` and adding `--fail-fast`. Every other argument must remain
 identical. The harness rejects execution without the pinned model, effort,
 run cap, prompt cap, and fail-fast behavior.
 
-## Current acceptance state
+## Completed confirmation result
 
-The local static contract and exact preflight pass. The preflight generated
-actual corpora of 128,812, 192,599, and 208,291 estimated tokens. Every one of
-the 18 case/size ELM packets selected its expected section within the 700-token
-budget; all generated roots rebuilt cleanly; target placement, tail canary,
-oracle isolation, nested manifests, and context headroom passed.
+The provider panel completed on 2026-08-27 from preregistered commit `918fa69`
+and panel manifest
+`d7c12af83621e2c6e82e157383772a7717cef1b580763dfc9f22d7b424e0ce09`.
+Both hosted CI runs for the frozen commit passed before execution. The local
+matrix used `codex-cli 0.149.0`, `gpt-5.6-sol`, and reasoning effort `low`.
 
-No authenticated provider calls are part of that result. Until the frozen
-78-call matrix completes, the five-size development panel remains the latest
-provider evidence and its conclusion remains: no sustained benchmark-qualified
-crossover observed.
+All 78/78 calls passed: six no-memory controls, 36 ELM calls, and 36 complete-
+corpus calls. Every answer/evidence check, provider-usage record, tool-
+provenance audit, exact pair, case summary, canonical-Markdown manifest, target
+placement check, and tail-canary gate passed. The run did not abort and took
+984.232 seconds.
+
+| Target | Actual corpus | Active docs | Median case-level ELM/full ratio | Cases below full | Exact sign p | Qualified |
+| ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| 128,000 | 128,812 | 132 | 0.714786 | 6/6 | 0.015625 | Yes |
+| 192,000 | 192,599 | 193 | 0.503037 | 6/6 | 0.015625 | Yes |
+| 208,000 | 208,291 | 208 | 0.467141 | 6/6 | 0.015625 | Yes |
+
+The preregistered conclusion is therefore **sustained large-corpus token
+advantage confirmed for this independent synthetic holdout panel**. Both
+primary targets, 192k and 208k, qualified. The 128k anchor also qualified, so
+this experiment establishes only that the tested onset is at or below 128k; it
+does not identify an exact crossover point.
+
+For run budgeting, provider-reported input-plus-output totals were 3,453,791
+tokens for ELM, 6,313,543 for complete-corpus calls, and 119,369 for no-memory
+controls. The paired-arm pooled ratio is 0.547045, but the preregistered
+statistic remains the case-level ratio and exact sign test at each size, not a
+total pooled across different corpus sizes.
+
+This result supersedes the development panel only for the narrow question it
+was designed to confirm. It does not establish an exact universal crossover,
+real-world task quality, latency superiority, cost equivalence across vendors,
+or generalization to another model, reasoning effort, CLI version, corpus, or
+provider telemetry definition.

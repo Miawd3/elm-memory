@@ -377,6 +377,12 @@ also verifies all 18 case/size context packets and the fixed 128k/192k/208k
 prompt envelope without provider calls. The protocol and current preflight-only
 acceptance state are documented in
 [docs/HOLDOUT_CONFIRMATION.md](docs/HOLDOUT_CONFIRMATION.md).
+The completed preregistered Codex run passed 78/78 calls. All six independent
+case summaries favored ELM at 128k, 192k, and 208k; median case-level token
+ratios were 0.714786, 0.503037, and 0.467141, with exact one-sided
+`p = 0.015625` at every size. This confirms a sustained large-corpus token
+advantage for that synthetic holdout panel only, not a universal crossover or
+real-world task-quality claim.
 
 ## Architecture boundary
 
