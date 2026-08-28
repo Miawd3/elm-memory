@@ -43,6 +43,8 @@ ACCEPTED_AUTHORITIES = {
     "user_ratified",
     "verified_repository_state",
 }
+AGENT_MEMORY_AUTHORITY = "agent_curated"
+CLAIM_AUTHORITIES = ACCEPTED_AUTHORITIES | {AGENT_MEMORY_AUTHORITY}
 PROPOSAL_AUTHORITIES = {
     "agent_proposal",
     "candidate_inference",
@@ -72,6 +74,7 @@ REASON_CODES = {
     "insufficient_evidence",
     "obsolete",
     "out_of_scope",
+    "quota_exceeded",
     "user_request",
     "other",
 }
@@ -100,6 +103,24 @@ class ProposalLimits:
             raise GovernanceError("max_reference_count cannot exceed 256.")
         if self.max_request_bytes > 4 * 1024 * 1024:
             raise GovernanceError("max_request_bytes cannot exceed 4 MiB.")
+        return self
+
+
+@dataclass(frozen=True)
+class AgentMemoryLimits:
+    """Durable active-memory limits for an operator-enabled autonomous profile."""
+
+    max_active_per_project: int = 512
+    max_active_root: int = 4_096
+
+    def validate(self) -> "AgentMemoryLimits":
+        for field, value in self.__dict__.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise GovernanceError(f"{field} must be a positive integer.")
+        if self.max_active_root < self.max_active_per_project:
+            raise GovernanceError(
+                "max_active_root cannot be smaller than max_active_per_project."
+            )
         return self
 
 
@@ -402,7 +423,7 @@ def _validate_event_record(record: dict, path: Path) -> dict:
             record[field] = validate_id(record[field], kind)
     if record.get("target_id"):
         record["target_id"] = _line(record["target_id"], "target_id")
-    if record.get("authority") and record["authority"] not in ACCEPTED_AUTHORITIES:
+    if record.get("authority") and record["authority"] not in CLAIM_AUTHORITIES:
         raise GovernanceError(f"Invalid event authority at {path}.")
     if record.get("reason_code") and record["reason_code"] not in REASON_CODES:
         raise GovernanceError(f"Invalid event reason code at {path}.")
@@ -1235,8 +1256,8 @@ def parse_claim(path: Path) -> dict:
         raise GovernanceError(f"Claim path does not match its ID/project: {path}")
     if values["status"] not in CLAIM_STATUSES:
         raise GovernanceError(f"Invalid claim status at {path}: {values['status']}")
-    if values["authority"] not in ACCEPTED_AUTHORITIES:
-        raise GovernanceError(f"Invalid accepted authority at {path}: {values['authority']}")
+    if values["authority"] not in CLAIM_AUTHORITIES:
+        raise GovernanceError(f"Invalid claim authority at {path}: {values['authority']}")
     if values["sensitivity"] not in SENSITIVITIES:
         raise GovernanceError(f"Invalid claim sensitivity at {path}: {values['sensitivity']}")
     for field in ("valid_from", "recorded_at", "transitioned_at"):
@@ -1826,6 +1847,457 @@ def accept_proposal(
         "authority": authority,
         **transaction,
     }
+
+
+def _overlapping_current_claims(claims: dict[str, dict], proposal: dict) -> list[dict]:
+    candidate_start = _parse_time(proposal["valid_from"], "valid_from")
+    matches = []
+    for claim in claims.values():
+        if claim["status"] != "accepted":
+            continue
+        if (
+            claim["project"],
+            claim["subject"],
+            claim["predicate"],
+        ) != (
+            proposal["project"],
+            proposal["subject"],
+            proposal["predicate"],
+        ):
+            continue
+        claim_end = claim.get("valid_to") or "9999-12-31T23:59:59.999999+00:00"
+        if candidate_start < claim_end:
+            matches.append(claim)
+    authority_rank = {
+        "verified_repository_state": 0,
+        "user_ratified": 1,
+        "ratified_project_decision": 2,
+        AGENT_MEMORY_AUTHORITY: 3,
+    }
+    return sorted(
+        matches,
+        key=lambda item: (
+            authority_rank.get(item["authority"], 99),
+            item["recorded_at"],
+            item["claim_id"],
+        ),
+    )
+
+
+def _agent_memory_terminal_result(
+    proposal: dict,
+    events: dict[str, dict],
+    claims: dict[str, dict],
+) -> dict:
+    related_events = sorted(
+        (
+            event
+            for event in events.values()
+            if event.get("proposal_id") == proposal["proposal_id"]
+            and event.get("action") in TERMINAL_PROPOSAL_ACTIONS
+        ),
+        key=lambda item: (item.get("occurred_at", ""), item["event_id"]),
+    )
+    if len(related_events) != 1:
+        raise GovernanceError(
+            "Autonomous memory proposal has ambiguous terminal history; mutation refused."
+        )
+    event = related_events[0]
+    if event["action"] in {"proposal_accepted", "claim_superseded"}:
+        claim_id = event.get("claim_id")
+        claim = claims.get(claim_id or "")
+        if claim is None:
+            raise GovernanceError(
+                "Accepted autonomous memory proposal has no canonical claim."
+            )
+        moment = utc_now()
+        if claim["status"] != "accepted":
+            terminal_status = claim["status"]
+        elif claim["valid_from"] > moment:
+            terminal_status = "future"
+        elif claim.get("valid_to") and claim["valid_to"] <= moment:
+            terminal_status = "expired"
+        else:
+            terminal_status = "accepted"
+        autonomous_acceptance = (
+            event["action"] == "proposal_accepted"
+            and event.get("actor") == "mcp:autonomous"
+            and event.get("authority") == AGENT_MEMORY_AUTHORITY
+            and claim["authority"] == AGENT_MEMORY_AUTHORITY
+            and claim.get("actor") == "mcp:autonomous"
+            and claim.get("proposal_id") == proposal["proposal_id"]
+        )
+        if autonomous_acceptance and terminal_status == "accepted":
+            return {
+                "action": "remembered",
+                "proposal_id": proposal["proposal_id"],
+                "claim_id": claim["claim_id"],
+                "authority": claim["authority"],
+                "candidate_activated": True,
+                "conflict_detected": False,
+                "terminal_status": terminal_status,
+                "activation_replay": True,
+            }
+        return {
+            "action": (
+                "existing_governed_memory"
+                if terminal_status == "accepted"
+                else "inactive_terminal"
+            ),
+            "proposal_id": proposal["proposal_id"],
+            "candidate_activated": False,
+            "conflict_detected": False,
+            "existing_claim_id": claim["claim_id"],
+            "existing_authority": claim["authority"],
+            "terminal_status": terminal_status,
+            "activation_replay": True,
+        }
+    existing = _overlapping_current_claims(claims, proposal)
+    same = next((item for item in existing if item["object"] == proposal["object"]), None)
+    selected = claims.get(event.get("target_id") or "") or same or (
+        existing[0] if existing else None
+    )
+    autonomous_terminal = event.get("actor") == "mcp:autonomous"
+    if (
+        autonomous_terminal
+        and event["action"] == "proposal_rejected"
+        and event.get("reason_code") == "duplicate"
+    ):
+        action = "duplicate"
+        conflict = False
+    elif (
+        autonomous_terminal
+        and event["action"] == "proposal_deferred"
+        and event.get("reason_code") == "contradicted"
+    ):
+        action = "conflict_deferred"
+        conflict = True
+    elif (
+        autonomous_terminal
+        and event["action"] == "proposal_deferred"
+        and event.get("reason_code") == "quota_exceeded"
+    ):
+        action = "quota_deferred"
+        conflict = False
+    elif (
+        autonomous_terminal
+        and event["action"] == "proposal_deferred"
+        and event.get("reason_code") == "out_of_scope"
+        and proposal["valid_from"] > utc_now()
+    ):
+        action = "future_deferred"
+        conflict = False
+    elif event["action"] == "proposal_rejected":
+        action = "terminal_rejected"
+        conflict = False
+    elif event["action"] == "proposal_deferred":
+        action = "terminal_deferred"
+        conflict = False
+    else:
+        raise GovernanceError(
+            "Autonomous memory proposal ended outside the supported lifecycle."
+        )
+    return {
+        "action": action,
+        "proposal_id": proposal["proposal_id"],
+        "candidate_activated": False,
+        "conflict_detected": conflict,
+        "quota_exceeded": action == "quota_deferred",
+        "quota_message": (
+            "active agent-memory quota was exceeded at the original attempt."
+            if action == "quota_deferred"
+            else None
+        ),
+        "existing_claim_id": selected["claim_id"] if selected else None,
+        "existing_authority": selected["authority"] if selected else None,
+        "terminal_status": TERMINAL_PROPOSAL_ACTIONS[event["action"]],
+        "terminal_reason_code": event.get("reason_code"),
+        "activation_replay": True,
+    }
+
+
+def activate_agent_memory(
+    root: Path,
+    *,
+    proposal_id: str,
+    limits: AgentMemoryLimits,
+    lock_timeout: float,
+    recover_stale: bool,
+) -> dict:
+    """Activate one proposal as low-authority agent memory without a per-item human gate.
+
+    Exact duplicates reuse the stronger/current claim. A different object for an
+    overlapping subject/predicate is deferred instead of silently overwriting or
+    creating contradictory active memory.
+    """
+    limits.validate()
+    actor = "mcp:autonomous"
+    with WriterLock(
+        root,
+        "agent-memory-activate",
+        timeout=lock_timeout,
+        recover_stale=recover_stale,
+    ):
+        _refuse_pending_transactions(root)
+        proposals, evidence, events, tombstones = load_governance(root)
+        statuses = proposal_statuses(proposals, events, tombstones)
+        proposal = _find_proposal(proposals, proposal_id)
+        status = statuses[proposal["proposal_id"]]
+        claims = _load_claims(root)
+        if status != "pending":
+            return _agent_memory_terminal_result(proposal, events, claims)
+        _assert_evidence(root, proposal, evidence)
+
+        if proposal["valid_from"] > utc_now():
+            transaction_id = new_id("transaction")
+            event, relative = _event_record(
+                action="proposal_deferred",
+                actor=actor,
+                transaction_id=transaction_id,
+                project=proposal["project"],
+                proposal_id=proposal["proposal_id"],
+                reason_code="out_of_scope",
+            )
+            transaction = apply_transaction(
+                root,
+                transaction_id=transaction_id,
+                operation="agent-memory-future-defer",
+                actor=actor,
+                changes=[FileChange(root / relative, _json_bytes(event))],
+            )
+            return {
+                "action": "future_deferred",
+                "proposal_id": proposal["proposal_id"],
+                "candidate_activated": False,
+                "conflict_detected": False,
+                "terminal_status": "deferred",
+                "terminal_reason_code": "out_of_scope",
+                "activation_replay": False,
+                **transaction,
+            }
+
+        existing = _overlapping_current_claims(claims, proposal)
+        same = next((item for item in existing if item["object"] == proposal["object"]), None)
+        if same is not None or existing:
+            selected = same or existing[0]
+            action = "reject" if same is not None else "defer"
+            reason_code = "duplicate" if same is not None else "contradicted"
+            transaction_id = new_id("transaction")
+            event, relative = _event_record(
+                action=f"proposal_{'rejected' if action == 'reject' else 'deferred'}",
+                actor=actor,
+                transaction_id=transaction_id,
+                project=proposal["project"],
+                proposal_id=proposal["proposal_id"],
+                target_id=selected["claim_id"],
+                reason_code=reason_code,
+            )
+            transaction = apply_transaction(
+                root,
+                transaction_id=transaction_id,
+                operation=f"agent-memory-{action}",
+                actor=actor,
+                changes=[FileChange(root / relative, _json_bytes(event))],
+            )
+            return {
+                "action": "duplicate" if same is not None else "conflict_deferred",
+                "proposal_id": proposal["proposal_id"],
+                "candidate_activated": False,
+                "conflict_detected": same is None,
+                "existing_claim_id": selected["claim_id"],
+                "existing_authority": selected["authority"],
+                "activation_replay": False,
+                **transaction,
+            }
+
+        active_agent_claims = [
+            item
+            for item in claims.values()
+            if item["status"] == "accepted"
+            and item["authority"] == AGENT_MEMORY_AUTHORITY
+            and item.get("valid_to") is None
+        ]
+        project_count = sum(
+            1 for item in active_agent_claims if item["project"] == proposal["project"]
+        )
+        quota_message = None
+        if project_count + 1 > limits.max_active_per_project:
+            quota_message = (
+                "active agent-memory project quota exceeded "
+                f"({project_count + 1} > {limits.max_active_per_project})."
+            )
+        elif len(active_agent_claims) + 1 > limits.max_active_root:
+            quota_message = (
+                "active agent-memory root quota exceeded "
+                f"({len(active_agent_claims) + 1} > {limits.max_active_root})."
+            )
+        if quota_message is not None:
+            transaction_id = new_id("transaction")
+            event, relative = _event_record(
+                action="proposal_deferred",
+                actor=actor,
+                transaction_id=transaction_id,
+                project=proposal["project"],
+                proposal_id=proposal["proposal_id"],
+                reason_code="quota_exceeded",
+            )
+            transaction = apply_transaction(
+                root,
+                transaction_id=transaction_id,
+                operation="agent-memory-quota-defer",
+                actor=actor,
+                changes=[FileChange(root / relative, _json_bytes(event))],
+            )
+            return {
+                "action": "quota_deferred",
+                "proposal_id": proposal["proposal_id"],
+                "candidate_activated": False,
+                "conflict_detected": False,
+                "quota_exceeded": True,
+                "quota_message": quota_message,
+                "activation_replay": False,
+                **transaction,
+            }
+
+        claim_id = new_id("claim")
+        now = utc_now()
+        claim = {
+            "claim_id": claim_id,
+            "project": proposal["project"],
+            "subject": proposal["subject"],
+            "predicate": proposal["predicate"],
+            "object": proposal["object"],
+            "status": "accepted",
+            "authority": AGENT_MEMORY_AUTHORITY,
+            "valid_from": _parse_time(proposal["valid_from"], "valid_from"),
+            "valid_to": None,
+            "recorded_at": now,
+            "transitioned_at": now,
+            "proposal_id": proposal["proposal_id"],
+            "supersedes": None,
+            "superseded_by": None,
+            "evidence_ids": proposal.get("evidence_ids", []),
+            "source_refs": proposal.get("source_refs", []),
+            "sensitivity": proposal["sensitivity"],
+            "actor": actor,
+            "rationale": proposal.get("rationale")
+            or "Autonomously curated under an operator-enabled agent-memory policy.",
+        }
+        claim_payload = render_claim(claim)
+        transaction_id = new_id("transaction")
+        event, relative = _event_record(
+            action="proposal_accepted",
+            actor=actor,
+            transaction_id=transaction_id,
+            project=proposal["project"],
+            proposal_id=proposal["proposal_id"],
+            claim_id=claim_id,
+            authority=AGENT_MEMORY_AUTHORITY,
+            current_sha256=_hash_bytes(claim_payload),
+        )
+        transaction = apply_transaction(
+            root,
+            transaction_id=transaction_id,
+            operation="agent-memory-activate",
+            actor=actor,
+            changes=[
+                FileChange(claim_path(root, proposal["project"], claim_id), claim_payload),
+                FileChange(root / relative, _json_bytes(event)),
+            ],
+        )
+    return {
+        "action": "remembered",
+        "proposal_id": proposal["proposal_id"],
+        "claim_id": claim_id,
+        "authority": AGENT_MEMORY_AUTHORITY,
+        "candidate_activated": True,
+        "conflict_detected": False,
+        "activation_replay": False,
+        **transaction,
+    }
+
+
+def remember_memory_bundle(
+    root: Path,
+    *,
+    request: dict,
+    request_bytes: int,
+    allowed_projects: set[str],
+    proposal_limits: ProposalLimits,
+    memory_limits: AgentMemoryLimits,
+    lock_timeout: float,
+    recover_stale: bool,
+) -> dict:
+    """Persist and activate one bounded agent-curated memory with replay safety."""
+    _, payload, descriptors = normalize_proposal_submission(request)
+    if payload["sensitivity"] != "normal" or any(
+        item["sensitivity"] != "normal" for item in descriptors
+    ):
+        raise GovernanceError(
+            "autonomous memory accepts normal-sensitivity records only."
+        )
+    submitted = submit_proposal_bundle(
+        root,
+        request=request,
+        request_bytes=request_bytes,
+        allowed_projects=allowed_projects,
+        limits=proposal_limits,
+        lock_timeout=lock_timeout,
+        recover_stale=recover_stale,
+    )
+    activated = activate_agent_memory(
+        root,
+        proposal_id=submitted["proposal_id"],
+        limits=memory_limits,
+        lock_timeout=lock_timeout,
+        recover_stale=recover_stale,
+    )
+    result = {
+        **activated,
+        "submission_id": submitted["submission_id"],
+        "idempotent_replay": bool(
+            submitted.get("idempotent_replay") or activated.get("activation_replay")
+        ),
+        "canonical_committed": True,
+    }
+    if activated.get("candidate_activated"):
+        result.update({
+            "content_role": "untrusted_agent_memory",
+            "authority_warning": (
+                "Agent-curated memory is active but unverified. It never outranks "
+                "user-ratified or repository-verified memory."
+            ),
+        })
+    elif activated.get("action") == "inactive_terminal":
+        result.update({
+            "content_role": "untrusted_memory_history",
+            "authority_warning": (
+                "The terminal claim is not current active memory; it is available only as history."
+            ),
+        })
+    elif activated.get("existing_authority") == AGENT_MEMORY_AUTHORITY:
+        result.update({
+            "content_role": "untrusted_agent_memory_reference",
+            "authority_warning": (
+                "No new claim was activated; the existing agent-curated claim remains "
+                "active but unverified."
+            ),
+        })
+    elif activated.get("existing_authority"):
+        result.update({
+            "content_role": "governed_memory_reference",
+            "authority_warning": (
+                "No autonomous claim was activated; the existing governed claim was retained."
+            ),
+        })
+    else:
+        result.update({
+            "content_role": "untrusted_memory_candidate",
+            "authority_warning": (
+                "The candidate is not active memory; inspect canonical history for its terminal outcome."
+            ),
+        })
+    return result
 
 
 def reject_or_defer_proposal(

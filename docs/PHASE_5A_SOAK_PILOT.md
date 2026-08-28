@@ -1,6 +1,6 @@
 # Phase 5A soak pilot
 
-Status: reproducible offline pilot implemented; Phase 5B remains inactive
+Status: reproducible offline pilot implemented; Phase 5B is outside the active roadmap
 
 Date: 2026-08-26
 
@@ -149,8 +149,8 @@ an atomic compare-and-delete primitive against a hostile same-user process that
 can replace filesystem entries between the token check and unlink.
 
 The next evidence-producing step after this harness is a heterogeneous-agent
-pilot against disposable roots. Phase 5B remains gated on selecting a verifier
-that is genuinely outside the proposing agent's authority.
+pilot against disposable roots. The former Phase 5B path was originally gated
+on a verifier outside the proposing agent's authority and is now archived.
 
 That next step is now implemented as an opt-in local harness and documented in
 [HETEROGENEOUS_AGENT_PILOT.md](HETEROGENEOUS_AGENT_PILOT.md). It preserves the

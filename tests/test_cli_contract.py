@@ -85,13 +85,14 @@ class PublicCliContractTests(unittest.TestCase):
             "recover",
             "root-id",
             "proposal-submit",
+            "remember-submit",
             "proposal-preview",
         ):
             self.assertIn(command, completed.stdout)
         self.assertIn("ids", completed.stdout)
 
     def test_package_exposes_pre_release_version(self) -> None:
-        self.assertEqual("0.6.0.dev0", elm_memory.__version__)
+        self.assertEqual("0.7.0.dev0", elm_memory.__version__)
 
     def test_json_output_is_utf8_under_a_legacy_process_encoding(self) -> None:
         with tempfile.TemporaryDirectory(prefix="elm-unicode-") as temporary:

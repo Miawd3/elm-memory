@@ -1,6 +1,6 @@
 # Holdout confirmation panel
 
-Status: completed confirmatory provider panel; Phase 5B remains inactive
+Status: completed confirmatory provider panel; Phase 5B is outside the active roadmap
 
 Date: 2026-08-27
 

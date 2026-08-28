@@ -2,14 +2,16 @@
 
 ## Current phase
 
-Phases 1-5A are implemented and verified through the proposal-only MCP boundary.
+Phases 1-5A are implemented and verified through the proposal-only MCP boundary;
+Phase 6A bounded autonomous memory is implemented locally and awaiting hosted validation.
 The process default remains exactly seven read tools; the opt-in proposal profile
 adds only three untrusted-candidate tools and cannot change accepted memory.
-Phase 5B accepted-state execution remains inactive until a real verifier outside
-the proposing agent's authority is selected and separately ratified. The active
-post-5A work is synthetic heterogeneous-host evaluation, a deterministic
-corpus-size curve, and its separately frozen holdout confirmation panel; none
-widens MCP authority.
+The separate opt-in autonomous profile adds only `remember_memory`, writes
+active-but-unverified `agent_curated` claims for server-allowlisted projects,
+and cannot supersede, dispute, delete, recover, synchronize, migrate, or change
+policy. Phase 5B signed human ratification is historical research, not an active
+roadmap item. The completed evaluation track includes heterogeneous-host,
+corpus-size, and frozen holdout panels.
 
 ## Invariants
 
@@ -20,6 +22,9 @@ widens MCP authority.
 - Repository implementation truth outranks stored memory for current code facts.
 - Backups and `99_archive` remain excluded from ordinary retrieval.
 - Do not introduce mandatory hosted services, embeddings, model APIs, or database daemons.
+- Autonomous memory must remain explicitly labeled `agent_curated`, rank below
+  stronger current sources, reuse exact duplicates, and defer conflicts rather
+  than creating or hiding contradictory active claims.
 - A rendered context packet must never exceed its requested deterministic token estimate.
 - Context must label authority/status, preserve exact source locators, and quote retrieved bodies as untrusted data.
 - Retrieval traces contain no source body and no raw task text by default; they remain disposable runtime state.
