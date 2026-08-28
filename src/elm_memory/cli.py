@@ -56,6 +56,7 @@ from .governance import (
     load_root_identity,
     root_identity_path,
     pending_transactions,
+    parse_source_root_specs,
     recover_governance_transactions,
     reject_or_defer_proposal,
     remember_memory_bundle,
@@ -1402,6 +1403,7 @@ def command_remember_submit(args, con: sqlite3.Connection, root: Path) -> None:
         default_ttl_days=args.default_ttl_days,
         max_ttl_days=args.max_ttl_days,
     )
+    source_roots = parse_source_root_specs(args.source_root)
     result = remember_memory_bundle(
         root,
         request=request,
@@ -1410,6 +1412,7 @@ def command_remember_submit(args, con: sqlite3.Connection, root: Path) -> None:
         proposal_limits=proposal_limits,
         memory_limits=memory_limits,
         lifecycle_policy=lifecycle_policy,
+        source_roots=source_roots,
         lock_timeout=args.lock_timeout,
         recover_stale=args.recover_stale_lock,
     )
@@ -2009,6 +2012,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-active-root", type=int, default=4_096)
     p.add_argument("--default-ttl-days", type=int, default=90)
     p.add_argument("--max-ttl-days", type=int, default=365)
+    p.add_argument(
+        "--source-root",
+        action="append",
+        default=[],
+        metavar="ALIAS=PATH",
+        help="Trusted local repository root used to verify repo://ALIAS/path digests for CAS.",
+    )
 
     p = sub.add_parser("proposals", help="Inspect the immutable proposal queue and derived status.")
     proposal_sub = p.add_subparsers(dest="proposals_command", required=True)

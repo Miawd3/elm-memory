@@ -1,6 +1,6 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: active staged architecture; Phases 1–6A verified and merged; Phase 6B.1 locally validated
+Status: active staged architecture; Phases 1–6B.1 verified and merged; Phase 6B.2 locally validated
 
 Last updated: 2026-08-27
 
@@ -814,10 +814,11 @@ first public tag.
 Phases 4, 5A, and 6A are complete. Phase 6A bounded autonomous memory was merged
 after the per-item human-approval path was removed from the active roadmap.
 
-**Phase 6B.1 bounded validity leases** is implemented and locally validated as
+**Phase 6B.1 bounded validity leases** is implemented and merged as
 defined in [PHASE_6B_AUTONOMOUS_MAINTENANCE.md](PHASE_6B_AUTONOMOUS_MAINTENANCE.md).
-The next implementation gate is Phase 6B.2 source-verified compare-and-swap
-supersession; logical compaction remains a later, separately reviewed slice.
+**Phase 6B.2 source-verified compare-and-swap supersession** is implemented and
+locally validated without expanding the eight-tool autonomous MCP surface.
+Logical compaction remains the next separately reviewed implementation slice.
 Direct arbitrary Markdown writes, raw evidence snapshots,
 embeddings, authenticated multi-user scopes, and model summarization remain
 outside this gate.

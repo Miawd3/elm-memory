@@ -305,7 +305,8 @@ The full threat model and contract are in
 ## Opt-in autonomous memory
 
 Phase 6A removes per-item human approval from the normal AI-memory loop. Phase
-6B.1 adds bounded validity leases without adding another tool. An
+6B.1 adds bounded validity leases, and Phase 6B.2 adds source-verified
+compare-and-swap renewal/replacement, without adding another tool. An
 operator enables one bounded profile for explicit projects; agents may then call
 `remember_memory` without interrupting the user. The tool creates active
 canonical memory with authority `agent_curated`, which retrieval labels
@@ -319,13 +320,15 @@ elm-mcp --root /path/to/memory \
   --max-active-per-project 512 \
   --max-active-root 4096 \
   --default-ttl-days 90 \
-  --max-ttl-days 365
+  --max-ttl-days 365 \
+  --source-root workspace=/absolute/path/to/project
 ```
 
 The autonomous surface is exactly the seven read tools plus
 `remember_memory`. It does not expose proposal review tools or any operation for
-supersession, dispute, deletion, recovery, synchronization, identity, arbitrary
-files, or policy changes.
+dispute, deletion, recovery, synchronization, identity, arbitrary files, or
+policy changes. Source-backed supersession is an optional mode of the same
+closed request and remains unavailable without operator-configured source roots.
 
 Exact request replay produces one active claim. A different submission with the
 same active value reuses the existing claim; a conflicting value is deferred
@@ -339,8 +342,15 @@ timestamp into their immutable digest. `remember_memory` may supply that value
 explicitly within the server maximum; otherwise ELM derives it deterministically
 from `valid_from` and the standing default TTL. Expired claims disappear from
 ordinary retrieval and stop consuming active quota without a background writer,
-while canonical history remains intact. Renewal is a new bounded submission;
-Phase 6B.1 still cannot supersede or edit an existing claim in place.
+while canonical history remains intact. After expiry, renewal is a normal new
+bounded submission. While a claim is active, Phase 6B.2 renewal or replacement
+requires `supersedes_claim_id`, the current canonical claim SHA-256, and a
+verified `repo://ALIAS/path@sha256:DIGEST` reference whose locator already
+appears on the target claim. ELM rereads the file inside the configured root,
+then atomically supersedes the old `agent_curated` claim with another
+`agent_curated` claim. This proves observed bytes, not semantic truth or stronger
+authority. These CAS requests use proposal-v4 so the target ID, expected claim
+hash, source digest, replacement value, and effective lease are replay-bound.
 
 Search and exact reads expose governed claim identity, raw authority, a
 normalized authority label, and the `untrusted_memory_data` role. In
@@ -462,9 +472,10 @@ Phase order:
 4. read-only MCP and heterogeneous-host validation;
 5. Phase 5A: opt-in proposal-only MCP with no accepted-state tool (implemented);
 6. Phase 6A: opt-in bounded autonomous `agent_curated` memory (implemented);
-7. Phase 6B.1: deterministic validity leases and renewal (implemented and locally validated);
-8. Phase 6B.2/6B.3: source-verified supersession and logical compaction;
-9. optional semantic retrieval only after measured deterministic failures.
+7. Phase 6B.1: deterministic validity leases (implemented and locally validated);
+8. Phase 6B.2: source-verified CAS supersession and active-lease renewal (implemented and locally validated);
+9. Phase 6B.3: logical compaction;
+10. optional semantic retrieval only after measured deterministic failures.
 
 ## License, privacy, and publication status
 
@@ -487,7 +498,7 @@ is recorded in [docs/PHASE_4_READINESS.md](docs/PHASE_4_READINESS.md); the Phase
 - canonical mutations are intentionally serialized through one writer rather than supporting simultaneous writers;
 - deterministic token accounting is a model-neutral character estimate, not a vendor tokenizer or billed-token measurement;
 - ELM performs no LLM summarization and cannot recover synonyms absent from the lexical corpus;
-- evidence records contain locators and hashes only; ELM does not retain or verify source payload availability;
+- ordinary evidence records contain locators and hashes only; Phase 6B.2 verifies current local repository bytes only for explicitly configured CAS source roots;
 - deletion removes active canonical/derived ELM state but cannot erase Git history, filesystem snapshots, or external backups;
 - there is no raw evidence store, authenticated multi-user service, autonomous
   conflict resolver, or arbitrary accepted-state MCP mutation API.

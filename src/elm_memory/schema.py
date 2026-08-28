@@ -11,7 +11,7 @@ from .identity import (
 )
 
 
-INDEX_SCHEMA_VERSION = 4
+INDEX_SCHEMA_VERSION = 5
 
 
 class UnsupportedSchemaError(RuntimeError):
@@ -159,6 +159,8 @@ def _create_latest(con: sqlite3.Connection) -> None:
             submission_id TEXT,
             payload_digest TEXT,
             source_channel TEXT,
+            supersedes_claim_id TEXT,
+            expected_claim_sha256 TEXT,
             content_hash TEXT NOT NULL
         );
         CREATE INDEX idx_governance_proposals_project_status
@@ -386,6 +388,14 @@ def _migrate_three_to_four(con: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_four_to_five(con: sqlite3.Connection) -> None:
+    con.execute("ALTER TABLE governance_proposals ADD COLUMN supersedes_claim_id TEXT")
+    con.execute("ALTER TABLE governance_proposals ADD COLUMN expected_claim_sha256 TEXT")
+    con.execute(
+        "INSERT OR REPLACE INTO elm_meta(key,value) VALUES('index_schema_version','5')"
+    )
+
+
 def ensure_schema(con: sqlite3.Connection) -> None:
     version = schema_version(con)
     if version is None:
@@ -413,6 +423,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             elif version == 3:
                 _migrate_three_to_four(con)
                 version = 4
+            elif version == 4:
+                _migrate_four_to_five(con)
+                version = 5
             else:
                 raise SchemaMigrationError(f"No migration path from index schema {version}.")
         con.commit()

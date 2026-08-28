@@ -2,16 +2,18 @@
 
 ## Current phase
 
-Phases 1-5A and Phase 6A are implemented, hosted-validated, and merged. Phase
-6B.1 bounded validity leases are implemented and locally validated; hosted
-validation is the current gate before Phase 6B.2 begins.
+Phases 1-5A, Phase 6A, and Phase 6B.1 are implemented, validated, and merged.
+Phase 6B.2 source-verified compare-and-swap is implemented and locally
+validated; hosted validation is the current gate before Phase 6B.3 begins.
 The process default remains exactly seven read tools; the opt-in proposal profile
 adds only three untrusted-candidate tools and cannot change accepted memory.
 The separate opt-in autonomous profile adds only `remember_memory`, writes
 active-but-unverified `agent_curated` claims for server-allowlisted projects,
-and cannot supersede, dispute, delete, recover, synchronize, migrate, or change
-policy. Phase 5B signed human ratification is historical research, not an active
-roadmap item. The completed evaluation track includes heterogeneous-host,
+and can replace only the current `agent_curated` lineage head through
+operator-configured, source-verified compare-and-swap. It cannot dispute,
+delete, recover, synchronize, migrate, change policy, or grant stronger
+authority. Phase 5B signed human ratification is historical research, not an
+active roadmap item. The completed evaluation track includes heterogeneous-host,
 corpus-size, and frozen holdout panels.
 
 ## Invariants
@@ -29,6 +31,9 @@ corpus-size, and frozen holdout panels.
 - Autonomous leases must bind their effective `valid_to` into canonical replay
   identity, preserve expired history, and count quota against temporally current
   claims rather than merely claims with an open-ended interval.
+- Autonomous CAS must bind target ID and canonical claim hash, verify current
+  bytes only inside operator-configured contained source roots, preserve
+  `agent_curated` authority and lineage, and atomically write old/new/event state.
 - A rendered context packet must never exceed its requested deterministic token estimate.
 - Context must label authority/status, preserve exact source locators, and quote retrieved bodies as untrusted data.
 - Retrieval traces contain no source body and no raw task text by default; they remain disposable runtime state.
