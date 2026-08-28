@@ -432,6 +432,9 @@ checks the offline contract for the post-5A coding-agent experiment. Real
 Codex, Gemini, or Claude calls are local and opt-in through `--execute`; they use
 only disposable synthetic roots, bounded run counts, isolated host workspaces,
 oracle-free response schemas, and sanitized provider-native usage telemetry.
+Antigravity defaults to a host-brokered, text-only ELM adapter with separate
+broker provenance and zero allowed provider tool calls; its experimental
+`direct-mcp` mode remains available without weakening the original gate.
 The method and its deliberately limited first interpretation are documented in
 [docs/HETEROGENEOUS_AGENT_PILOT.md](docs/HETEROGENEOUS_AGENT_PILOT.md).
 

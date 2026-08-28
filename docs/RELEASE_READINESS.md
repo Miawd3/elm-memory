@@ -16,7 +16,7 @@ The active development line reflects completed, validated capabilities through P
 - **Windows baseline (Python 3.14.3)**:
   - Source bytecode compilation passed cleanly:
     `python -m compileall -q src tests benchmarks scripts`
-  - Full test suite passed (251/251 tests across 20 test modules):
+  - Full test suite passed (260/260 tests across 20 test modules):
     `python -m unittest discover -s tests -v`
   - Sanitized deterministic retrieval benchmark passed (50/50 cases with zero leakage):
     `python benchmarks/run_benchmark.py --assert-pass`
@@ -24,8 +24,9 @@ The active development line reflects completed, validated capabilities through P
     `python benchmarks/run_heterogeneous_pilot.py --validate-only --assert-pass`
     `python benchmarks/run_corpus_size_curve.py --validate-only --assert-pass`
     `python benchmarks/run_holdout_confirmation.py --validate-only --assert-pass`
-  - The release-hardening diff is limited to synchronized documentation and the
-    stdlib-only acceptance harness with its tests.
+  - The release-hardening diff contains synchronized documentation, the
+    stdlib-only acceptance harness, and the separately attested Antigravity
+    host-broker adapter with their tests.
 - **Hosted CI status**:
   - Previous branch and pull request validation covered Python 3.11–3.14 on both Windows and Linux, passing all jobs.
   - The latest hosted `main` run did not start because of GitHub account spending limits; this is an external rerun gate, not a code defect or regression.
@@ -35,6 +36,15 @@ The active development line reflects completed, validated capabilities through P
   - Validation runs only inside `/root/agy-workspaces/elm-memory-v1-20260828`.
     The production application and data paths are outside that workspace and
     were not accessed or modified.
+- **Antigravity host-broker acceptance (isolated Debian copy)**:
+  - Antigravity CLI 1.1.22 with `gemini-3.7-flash-high` passed the ELM,
+    full-corpus, and no-memory `orion_storage` cells through the
+    `host-brokered-context` adapter.
+  - All quality, usage, broker-provenance, zero-provider-tool, and canonical
+    immutability gates passed. ELM/full-corpus provider-token ratio was `0.6304`
+    for this single canary only.
+  - The original `direct-mcp` route remains separately non-claim-capable on CLI
+    1.1.22; no permission bypass or relaxed audit was introduced.
 - **Cross-platform candidate artifact acceptance**:
   - The final pure-Python candidate wheel has SHA-256
     `0f581b8c5024f0c960fd811402a1230e9d5180f99ee0c7ae2a0d2009903d816a`.
@@ -60,16 +70,7 @@ The active development line reflects completed, validated capabilities through P
 
 ### Private-v1 Blockers (Active Release-Hardening Gate)
 
-1. **Antigravity Evaluation Confinement**: Antigravity CLI 1.1.22 exposes no
-   verified tool-schema pruning equivalent to the Codex/Claude routes. A
-   2026-08-28 isolated recheck found that broad read or command denials also
-   block workspace MCP discovery or local MCP startup; the documented exact
-   allowlist produced no MCP trace in that host snapshot. Prompt tool binding is
-   hardened, but it is defense in depth only. Keep the route non-claim-capable
-   until a future host mechanism or streamed rerun proves an exact MCP-only
-   trace with `non_mcp_tool_call_count == 0`; do not expand the allowlist or
-   weaken the gate.
-2. **External Hosted CI Rerun**: Re-trigger hosted CI once GitHub spending limits are refreshed.
+1. **External Hosted CI Rerun**: Re-trigger hosted CI once GitHub spending limits are refreshed.
 
 ### Public-Release Blockers (Deferred to Eventual Public Tag)
 

@@ -2,7 +2,7 @@
 
 Status: executable local pilot; Phase 5B is outside the active roadmap
 
-Date: 2026-08-27
+Date: 2026-08-28
 
 ## Purpose
 
@@ -10,7 +10,10 @@ This pilot measures whether different coding-agent hosts can recover the same
 fact from the same disposable ELM root, and records the usage counters each host
 reports. It compares three evidence conditions within each host:
 
-- `elm`: the host retrieves through the seven read-only ELM MCP tools;
+- `elm`: ELM supplies a bounded, source-linked packet. Codex and Claude Code
+  retrieve it through the seven read-only MCP tools; Antigravity defaults to a
+  separately attested host-brokered adapter because CLI 1.1.22 cannot safely
+  confine direct workspace MCP discovery;
 - `full_corpus`: the same active synthetic Markdown corpus is placed directly
   in the initial prompt;
 - `no_memory`: no project evidence is supplied, so the correct answer is
@@ -23,16 +26,23 @@ enable proposal tools, write accepted memory, or implement Phase 5B.
 
 The executable supports Codex, Gemini through Antigravity, Claude through
 Antigravity, and an optional direct Claude Code route. Every provider run uses
-a separate empty working directory. Only the ELM MCP subprocess receives the
-temporary synthetic memory-root path, so the fixture is not available through
-an ordinary relative read from the host workspace.
+a separate empty working directory. Codex and Claude Code use direct read-only
+MCP. In the default Antigravity mode, the trusted harness—not the model—calls
+`status` and `context` against the synthetic root, validates the bounded packet,
+and injects that packet into a text-only provider prompt. Antigravity receives
+neither the root path nor an attached workspace.
 
 The harness copies only the ELM Python package into a separate temporary runtime
-and removes repository `PYTHONPATH` from provider processes. Codex and
-Antigravity run in streamed-event mode: `elm` must show only calls to the named
-read-only MCP server and must include `status` plus `context`; the other two
-conditions must show zero tool calls. Missing provenance is a non-pass result,
-even when the answer is correct.
+and removes repository `PYTHONPATH` from provider processes. Codex direct-MCP
+`elm` runs must show only the named read-only server and must include `status`
+plus `context`. Host-brokered Antigravity, full-corpus, and no-memory runs must
+show exactly zero provider tool calls. Missing provider or broker provenance is
+a non-pass result even when the answer is correct.
+
+The report calls the two paths `direct-mcp` and `host-brokered-context`.
+Brokered responses use `evidence_status='provided'`: ELM retrieved the packet,
+but the model received it as supplied evidence. Direct MCP continues to use
+`evidence_status='retrieved'`.
 
 The default matrix is one case across Codex, Gemini-Antigravity, and
 Claude-Antigravity in all three conditions. Direct Claude Code is opt-in because
@@ -43,15 +53,21 @@ it has a separate authentication state and supports its own per-run USD cap.
 The expected answer, expected source path, and expected heading live only in
 `benchmarks/heterogeneous_cases.json`, which is evaluator-side. The response
 schema contains only field types and limits; it contains no expected values or
-`const` oracle. ELM and no-memory prompts do not contain the expected answer or
-locator. The full-corpus prompt necessarily contains the evidence being tested.
+`const` oracle. Direct-MCP ELM and no-memory prompts do not contain the expected
+answer or locator. A host-brokered ELM prompt and a full-corpus prompt
+necessarily contain evidence, but neither receives evaluator-only expected
+values.
 
 The evaluator checks the supporting sentence by normalized exact match, plus
 the source path, stable section key, and evidence status after the host returns.
 For a passing quality result, the report retains
 only the closed four-field synthetic response; failed or unexpected response
 payloads are discarded. Source locators must be relative Markdown paths without
-traversal. The remaining report contains allowlisted usage counters, versions,
+traversal. The broker receipt retains only hashes and bounded metadata: exact
+operations and exit codes, health/freshness, project/archive/trace policy,
+packet budget and size, source counts, packet/final-prompt/case/task/project/
+root/source-code bindings, and retrieval latency. It retains no packet body or
+raw query. The remaining report contains allowlisted usage counters, versions,
 durations, and boolean checks. Raw provider output, credentials, conversation
 IDs, and session IDs are not retained. Canonical Markdown hashes must be
 unchanged before and after the matrix.
@@ -64,10 +80,12 @@ Google, and Anthropic token or cache counters have identical semantics. It
 computes paired ELM-versus-full-corpus differences only within one route and one
 case. The model-neutral initial-prompt estimate is reported separately.
 
-These are end-to-end host-run measurements. ELM therefore includes the model's
-tool-selection turns and any repeated host scaffold, while full-corpus can
-finish in a single turn. That is the real current integration cost, not noise
-that the harness removes.
+For direct MCP, ELM includes model tool-selection turns and host scaffold. For
+host-brokered context, `retrieval_elapsed_ms`, `provider_elapsed_ms`, and their
+combined `elapsed_ms` are reported separately; provider token counters cover
+the injected prompt, not the local ELM subprocess. Results may be paired only
+within one route, model, adapter, case, size, and repetition. Direct-MCP and
+host-brokered token or latency results must never be pooled.
 
 ## Safe operation
 
@@ -77,8 +95,9 @@ Static CI-safe validation calls no model:
 python benchmarks/run_heterogeneous_pilot.py --validate-only --assert-pass
 ```
 
-Real calls require the explicit `--execute` flag. The default is bounded to at
-most 12 provider runs and 300 seconds per run:
+Real calls require the explicit `--execute` flag. The default Antigravity
+adapter is `host-brokered-context`; it needs no Antigravity MCP permission and
+is bounded to at most 12 provider runs and 300 seconds per run:
 
 ```bash
 python benchmarks/run_heterogeneous_pilot.py \
@@ -90,10 +109,16 @@ python benchmarks/run_heterogeneous_pilot.py \
   --assert-pass
 ```
 
-Antigravity headless ELM runs need temporary permission for exactly the seven
-read tools on the dedicated `elm_benchmark` server. Back up the settings file,
-add only these rules for the run, remove them immediately afterward, and verify
-that the restored file matches the backup byte-for-byte:
+The adapter acquires the ELM writer lock while it verifies `status` and calls
+`context --no-sync --no-trace`, checks canonical Markdown before and after,
+rejects archived or unsafe locators, binds the exact packet and final prompt by
+SHA-256, and fails before provider invocation on any mismatch. The provider
+stream must then attest zero tool calls.
+
+`--antigravity-adapter direct-mcp` retains the original experimental route.
+Only that mode needs temporary permission for exactly the seven read tools on
+the dedicated `elm_benchmark` server. Back up and restore the settings file
+byte-for-byte:
 
 ```json
 {
@@ -112,9 +137,9 @@ that the restored file matches the backup byte-for-byte:
 ```
 
 Do not leave these permissions in place, use a wildcard, or use a dangerous
-bypass. The permission is unnecessary for
-the full-corpus and no-memory conditions. The harness does not edit host
-settings or perform login; those remain operator-controlled actions.
+bypass. The permission is unnecessary for the default brokered adapter and both
+controls. The harness does not edit host settings or perform login; those
+remain operator-controlled actions.
 
 Antigravity permissions are execution gates, not tool-schema pruning. The ELM
 prompt names the MCP `read` tool explicitly and forbids built-in file or shell
@@ -164,10 +189,30 @@ not efficiency evidence.
 
 The prompt now binds section expansion explicitly to the ELM `read` tool and
 forbids built-in file or shell tools. That removes an ambiguous cue but does not
-certify the route. Gemini-through-Antigravity remains non-claim-capable until a
-host version provides enforceable tool-schema confinement or a fresh streamed
-run demonstrates the exact MCP-only trace without relying on broader host
-permissions. The audit rule and allowlist were not relaxed.
+certify direct MCP. The direct route remains non-claim-capable until a host
+version provides enforceable tool-schema confinement or a fresh streamed run
+demonstrates the exact MCP-only trace without broader host permissions. The
+audit rule and allowlist were not relaxed.
+
+### Host-brokered adapter boundary — 2026-08-28
+
+The default Antigravity adapter now moves retrieval into the trusted harness and
+runs the provider text-only. This is a valid RAG-style integration and can
+support a bounded claim about quality and provider-token effects of ELM context
+prompting versus full-corpus/no-memory prompting after a live three-arm matrix
+passes. It is not evidence of autonomous MCP use and is not comparable to the
+direct-MCP observations above. The report and aggregation keys preserve that
+boundary explicitly.
+
+The isolated Debian canary then passed all three `orion_storage` conditions with
+Antigravity CLI 1.1.22 and `gemini-3.7-flash-high`. All answers and evidence
+checks passed, the no-memory control returned `INSUFFICIENT_EVIDENCE`, canonical
+Markdown was unchanged, provider usage was complete, and every provider trace
+contained zero tool calls. The brokered ELM cell used a 521-token packet,
+reported 23,458 provider tokens and 20.125 seconds combined latency; full corpus
+reported 37,211 tokens and 55.844 seconds. The within-route ratio was `0.6304`.
+This is a claim-capable integration canary, but one case is not a statistical
+efficiency claim or a general crossover result.
 
 ## Next evidence step
 

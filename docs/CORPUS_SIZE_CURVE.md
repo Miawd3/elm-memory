@@ -2,7 +2,7 @@
 
 Status: executable local evidence harness; Phase 5B is outside the active roadmap
 
-Date: 2026-08-27
+Date: 2026-08-28
 
 ## Purpose
 
@@ -39,18 +39,20 @@ ELM/no-memory prompts.
 
 ## Schedule and isolation
 
-Every `(route, size, case, repeat)` cell is a pair containing `elm` and
+Every `(route, adapter, size, case, repeat)` cell is a pair containing `elm` and
 `full_corpus`. Repeats must be even. Condition order flips within each exact
 cell, size order alternates forward and reverse, and case order rotates between
 repeats. This limits simple order and warm-cache bias without pretending that
 provider caches can be disabled or normalized.
 
-Each provider call receives a separate empty workspace. Only the ELM MCP
-subprocess receives the matching temporary root. The existing heterogeneous
-pilot owns response validation, provider-native usage parsing, strict streamed
-tool provenance, output sanitization, and canonical Markdown immutability.
+Each provider call receives a separate empty workspace. Direct-MCP routes expose
+the matching temporary root only to the ELM subprocess. Host-brokered
+Antigravity retrieves before provider invocation and sends only the validated
+packet in a text-only prompt. The heterogeneous pilot owns response validation,
+provider-native usage parsing, strict provider and broker provenance, output
+sanitization, and canonical Markdown immutability.
 
-Comparisons never cross route, case, repeat, or corpus size. Provider-native
+Comparisons never cross route, adapter, case, repeat, or corpus size. Provider-native
 counters retain their original meanings and remain marked as not comparable
 between providers. Initial-prompt estimated tokens are reported separately from
 provider end-to-end usage.
@@ -132,6 +134,13 @@ an explicit reasoning effort. Without that flag, successful calibration output
 remains diagnostic and its crossover interpretation is
 `claim_mode_not_enabled`.
 
+For Antigravity's default `host-brokered-context` adapter, claim-capable mode
+also requires `--acknowledge-brokered-claim-scope`. Its report scope is
+`brokered_context_prompt_efficiency_bounded_panel`: it may compare the quality
+and provider-token cost of a bounded ELM packet with full-corpus prompting, but
+it must not be described as an autonomous MCP tool-use crossover. Direct-MCP
+and brokered runs are never aggregated together.
+
 The 2026-08-27 local preflight produced 60 calls and 30 exact pairs. The fifth
 root contained 197 active documents and 192,573 estimated corpus tokens; its
 largest full-corpus initial prompt estimate was 192,792. The selected Codex
@@ -175,10 +184,12 @@ subtracted before dispatch, and a call is not started when that grace no longer
 fits. The total clock is checked again after every call; an overrun fails the
 global integrity gate even if the provider returned a valid answer.
 
-Antigravity routes retain the exact temporary seven-tool permission procedure
+Antigravity defaults to the permission-free, text-only host-brokered adapter
 documented in [HETEROGENEOUS_AGENT_PILOT.md](HETEROGENEOUS_AGENT_PILOT.md).
-Correct answers with incomplete telemetry or unexpected tool activity are not
-accepted as curve evidence.
+The experimental `direct-mcp` adapter retains the exact temporary seven-tool
+permission procedure. Correct answers with incomplete telemetry, failed broker
+bindings, or unexpected provider tool activity are not accepted as curve
+evidence.
 
 ## First bounded calibration
 
