@@ -7,8 +7,9 @@ The process default remains exactly seven read tools; the opt-in proposal profil
 adds only three untrusted-candidate tools and cannot change accepted memory.
 Phase 5B accepted-state execution remains inactive until a real verifier outside
 the proposing agent's authority is selected and separately ratified. The active
-post-5A work is synthetic heterogeneous-host evaluation plus a deterministic
-corpus-size curve; neither widens MCP authority.
+post-5A work is synthetic heterogeneous-host evaluation, a deterministic
+corpus-size curve, and its separately frozen holdout confirmation panel; none
+widens MCP authority.
 
 ## Invariants
 
@@ -34,6 +35,7 @@ python -m unittest discover -s tests -v
 python benchmarks/run_benchmark.py --assert-pass
 python benchmarks/run_heterogeneous_pilot.py --validate-only --assert-pass
 python benchmarks/run_corpus_size_curve.py --validate-only --assert-pass
+python benchmarks/run_holdout_confirmation.py --validate-only --assert-pass
 ```
 
 Do not run authenticated provider pilots in hosted CI. Real Codex, Gemini,
@@ -41,6 +43,9 @@ Antigravity-Claude, or Claude Code calls require the explicit local `--execute`
 flag, synthetic fixtures, bounded run counts, and sanitized reports.
 Corpus-size curve runs additionally require even repeats, pairwise
 counterbalancing, bounded prompt estimates, and a total execution-time cap.
+The holdout confirmation protocol is frozen at six cases, two technical
+repetitions, six no-memory controls, and 128k/192k/208k targets. Provider calls
+must not run until its exact `--plan-only` preflight passes.
 
 When modifying the Agent Skill, also run its `quick_validate.py` check. When modifying GitHub Actions, preserve read-only permissions, unprivileged triggers, immutable action pins, and the CI-policy tests.
 

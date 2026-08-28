@@ -265,3 +265,9 @@ effects; they do not erase them.
 The curve evaluates read-only retrieval efficiency only. It does not widen the
 MCP surface, enable accepted-state mutation, train a model, add embeddings, or
 advance Phase 5B.
+
+The independent next stage is frozen in
+[HOLDOUT_CONFIRMATION.md](HOLDOUT_CONFIRMATION.md). It uses six unseen cases
+across three projects, project-scoped near-miss growth, case-level statistics,
+no-memory leakage controls, and a context-safe 208k persistence point. Its
+passing offline preflight is not yet a provider result.

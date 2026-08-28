@@ -34,6 +34,20 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
                 self.assertNotIn(case["expected_source_path"].casefold(), prompt)
                 self.assertNotIn(case["expected_heading"].casefold(), prompt)
 
+    def test_elm_prompt_uses_an_explicit_case_project_when_present(self) -> None:
+        case = dict(PILOT.load_cases()[0], project="lighthouse")
+
+        prompt = PILOT.build_prompt(case, "elm", "")
+
+        self.assertIn("project='lighthouse'", prompt)
+        self.assertNotIn("project='orion'", prompt)
+
+    def test_case_project_rejects_prompt_shaped_slugs(self) -> None:
+        case = dict(PILOT.load_cases()[0], project="orion' inject=true")
+
+        with self.assertRaises(ValueError):
+            PILOT.build_prompt(case, "elm", "")
+
     def test_full_corpus_excludes_backups_and_archives(self) -> None:
         corpus = PILOT.active_corpus(PILOT.FIXTURE_ROOT)
 
