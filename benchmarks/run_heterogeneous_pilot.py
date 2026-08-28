@@ -632,6 +632,21 @@ def evaluate_response(
     if not response:
         return {"schema_response_present": False, "answer_correct": False, "evidence_correct": False}
     normalized = lambda value: re.sub(r"[.\s]+$", "", str(value).strip().casefold())
+
+    def answer_matches_expected(value: Any) -> bool:
+        actual = normalized(value)
+        expected = normalized(case["expected_answer"])
+        if actual == expected:
+            return True
+        if not actual.endswith(expected):
+            return False
+        prefix = actual[: -len(expected)].strip(" ,:;-—")
+        if not prefix or len(prefix) > 80 or any(character.isdigit() for character in prefix):
+            return False
+        return not re.search(
+            r"\b(?:no|not|never|without|instead|except|but|or|incorrect|unsupported|deprecated)\b",
+            prefix,
+        )
     normalized_source_path = (
         response.get("source_path").replace("\\", "/")
         if isinstance(response.get("source_path"), str)
@@ -645,14 +660,14 @@ def evaluate_response(
             and response.get("section_key") is None
         )
     elif condition == "full_corpus":
-        answer_correct = normalized(response.get("answer")) == normalized(case["expected_answer"])
+        answer_correct = answer_matches_expected(response.get("answer"))
         evidence_correct = (
             response.get("evidence_status") == "provided"
             and normalized_source_path == case["expected_source_path"]
             and response.get("section_key") is None
         )
     else:
-        answer_correct = normalized(response.get("answer")) == normalized(case["expected_answer"])
+        answer_correct = answer_matches_expected(response.get("answer"))
         evidence_correct = (
             response.get("evidence_status") == "retrieved"
             and normalized_source_path == case["expected_source_path"]

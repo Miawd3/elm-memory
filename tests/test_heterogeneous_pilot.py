@@ -429,6 +429,43 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
 
         self.assertTrue(all(checks.values()))
 
+    def test_evaluation_accepts_only_bounded_neutral_answer_framing(self) -> None:
+        case = next(item for item in PILOT.load_cases() if item["id"] == "orion_logs")
+        section_key = "section_11111111-1111-4111-8111-111111111111"
+
+        def answer_passes(answer: str) -> bool:
+            return PILOT.evaluate_response(
+                {
+                    "answer": answer,
+                    "source_path": case["expected_source_path"],
+                    "section_key": section_key,
+                    "evidence_status": "retrieved",
+                },
+                case=case,
+                condition="elm",
+                section_key=section_key,
+            )["answer_correct"]
+
+        self.assertTrue(
+            answer_passes(
+                "Application logs use newline-delimited JSON with stable event names."
+            )
+        )
+        self.assertFalse(
+            answer_passes("Not newline-delimited JSON with stable event names.")
+        )
+        self.assertFalse(
+            answer_passes(
+                "Use JSON or newline-delimited JSON with stable event names."
+            )
+        )
+        self.assertFalse(
+            answer_passes(
+                ("explanatory framing " * 8)
+                + "newline-delimited JSON with stable event names."
+            )
+        )
+
     def test_model_selection_is_explicit_and_prefix_bounded(self) -> None:
         available = ["gemini-3.7-flash-high", "claude-sonnet-4-6"]
 
