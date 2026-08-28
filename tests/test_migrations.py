@@ -188,7 +188,7 @@ class IndexMigrationTests(unittest.TestCase):
                     )
                 }
 
-        self.assertEqual(3, version)
+        self.assertEqual(4, version)
         self.assertIn("claims", tables)
         self.assertIn("governance_events", tables)
 
@@ -271,14 +271,32 @@ class IndexMigrationTests(unittest.TestCase):
             with closing(connect(root)) as con:
                 version = schema_version(con)
                 row = con.execute(
-                    "SELECT format_version,submission_id,payload_digest,source_channel "
+                    "SELECT format_version,submission_id,payload_digest,source_channel,valid_to "
                     "FROM governance_proposals WHERE proposal_id=?",
                     (proposal_id,),
                 ).fetchone()
 
-        self.assertEqual(3, version)
+        self.assertEqual(4, version)
         self.assertEqual(1, row[0])
-        self.assertEqual((None, None, None), tuple(row[1:]))
+        self.assertEqual((None, None, None, None), tuple(row[1:]))
+
+    def test_v3_projection_adds_proposal_validity_without_data_loss(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="elm-v3-migrate-") as temporary:
+            root = Path(temporary)
+            with closing(connect(root)):
+                pass
+            with closing(sqlite3.connect(db_path(root))) as con:
+                con.execute("ALTER TABLE governance_proposals DROP COLUMN valid_to")
+                con.execute("UPDATE elm_meta SET value='3' WHERE key='index_schema_version'")
+                con.commit()
+            with closing(connect(root)) as con:
+                version = schema_version(con)
+                columns = {
+                    row[1] for row in con.execute("PRAGMA table_info(governance_proposals)")
+                }
+
+        self.assertEqual(4, version)
+        self.assertIn("valid_to", columns)
 
 
 if __name__ == "__main__":

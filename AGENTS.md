@@ -2,8 +2,9 @@
 
 ## Current phase
 
-Phases 1-5A are implemented and verified through the proposal-only MCP boundary;
-Phase 6A bounded autonomous memory is implemented locally and awaiting hosted validation.
+Phases 1-5A and Phase 6A are implemented, hosted-validated, and merged. Phase
+6B.1 bounded validity leases are implemented and locally validated; hosted
+validation is the current gate before Phase 6B.2 begins.
 The process default remains exactly seven read tools; the opt-in proposal profile
 adds only three untrusted-candidate tools and cannot change accepted memory.
 The separate opt-in autonomous profile adds only `remember_memory`, writes
@@ -25,6 +26,9 @@ corpus-size, and frozen holdout panels.
 - Autonomous memory must remain explicitly labeled `agent_curated`, rank below
   stronger current sources, reuse exact duplicates, and defer conflicts rather
   than creating or hiding contradictory active claims.
+- Autonomous leases must bind their effective `valid_to` into canonical replay
+  identity, preserve expired history, and count quota against temporally current
+  claims rather than merely claims with an open-ended interval.
 - A rendered context packet must never exceed its requested deterministic token estimate.
 - Context must label authority/status, preserve exact source locators, and quote retrieved bodies as untrusted data.
 - Retrieval traces contain no source body and no raw task text by default; they remain disposable runtime state.

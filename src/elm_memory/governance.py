@@ -7,7 +7,7 @@ canonical recovery journal so deleting ``.elm`` never removes recovery state.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -22,8 +22,10 @@ from .locking import WriterLock
 
 
 CANONICAL_FORMAT_VERSION = 1
-PROPOSAL_FORMAT_VERSION = 2
+PROPOSAL_V2_FORMAT_VERSION = 2
+PROPOSAL_FORMAT_VERSION = 3
 SUBMISSION_DIGEST_DOMAIN = b"ELM-PROPOSAL-SUBMISSION-V1\x00"
+MEMORY_SUBMISSION_DIGEST_DOMAIN = b"ELM-AUTONOMOUS-SUBMISSION-V1\x00"
 SUBMISSION_RETIREMENT_DOMAIN = b"ELM-PROPOSAL-SUBMISSION-RETIREMENT-V1\x00"
 ID_PREFIXES = {
     "proposal": "proposal_",
@@ -120,6 +122,26 @@ class AgentMemoryLimits:
         if self.max_active_root < self.max_active_per_project:
             raise GovernanceError(
                 "max_active_root cannot be smaller than max_active_per_project."
+            )
+        return self
+
+
+@dataclass(frozen=True)
+class AgentMemoryLifecyclePolicy:
+    """Deterministic validity bounds for newly activated agent memory."""
+
+    default_ttl_days: int = 90
+    max_ttl_days: int = 365
+
+    def validate(self) -> "AgentMemoryLifecyclePolicy":
+        for field, value in self.__dict__.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise GovernanceError(f"{field} must be a positive integer.")
+            if value > 3_650:
+                raise GovernanceError(f"{field} cannot exceed 3650 days.")
+        if self.default_ttl_days > self.max_ttl_days:
+            raise GovernanceError(
+                "default_ttl_days cannot exceed max_ttl_days."
             )
         return self
 
@@ -247,7 +269,7 @@ def _load_json(path: Path, record_type: str) -> dict:
         raise GovernanceError(f"Invalid {record_type} JSON at {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise GovernanceError(f"{record_type} record must be a JSON object: {path}")
-    allowed_versions = {1, 2} if record_type == "proposal" else {1}
+    allowed_versions = {1, 2, 3} if record_type == "proposal" else {1}
     format_version = value.get("format_version")
     if type(format_version) is not int or format_version not in allowed_versions:
         raise GovernanceError(
@@ -275,44 +297,52 @@ def _require_string_fields(record: dict, fields: set[str], path: Path, record_ty
 
 
 def _validate_proposal_record(record: dict, path: Path) -> dict:
-    is_v2 = record.get("format_version") == PROPOSAL_FORMAT_VERSION
-    if is_v2:
+    version = record.get("format_version")
+    is_versioned = version in {PROPOSAL_V2_FORMAT_VERSION, PROPOSAL_FORMAT_VERSION}
+    is_v3 = version == PROPOSAL_FORMAT_VERSION
+    if is_versioned:
         allowed = {
             "format_version", "record_type", "proposal_id", "project", "subject",
             "predicate", "object", "proposed_at", "valid_from", "actor",
             "requested_authority", "sensitivity", "evidence_ids", "source_refs",
             "rationale", "submission_id", "payload_digest", "source_channel",
         }
+        if is_v3:
+            allowed.add("valid_to")
+        label = f"Proposal-v{version}"
         unknown = sorted(set(record) - allowed)
         missing = sorted(allowed - set(record))
         if unknown:
             raise GovernanceError(
-                f"Proposal-v2 contains unknown fields at {path}: {', '.join(unknown)}"
+                f"{label} contains unknown fields at {path}: {', '.join(unknown)}"
             )
         if missing:
             raise GovernanceError(
-                f"Proposal-v2 is missing fields at {path}: {', '.join(missing)}"
+                f"{label} is missing fields at {path}: {', '.join(missing)}"
             )
         _require_string_fields(
             record,
             allowed - {"format_version", "evidence_ids", "source_refs"},
             path,
-            "Proposal-v2",
+            label,
         )
         if not isinstance(record["evidence_ids"], list) or not isinstance(record["source_refs"], list):
-            raise GovernanceError(f"Proposal-v2 evidence/source refs must be JSON arrays at {path}.")
+            raise GovernanceError(f"{label} evidence/source refs must be JSON arrays at {path}.")
         if any(not isinstance(item, str) for item in (*record["evidence_ids"], *record["source_refs"])):
-            raise GovernanceError(f"Proposal-v2 evidence/source refs must contain only strings at {path}.")
+            raise GovernanceError(f"{label} evidence/source refs must contain only strings at {path}.")
         if len(set(record["evidence_ids"])) != len(record["evidence_ids"]):
-            raise GovernanceError(f"Proposal-v2 contains duplicate evidence IDs at {path}.")
+            raise GovernanceError(f"{label} contains duplicate evidence IDs at {path}.")
         if len(set(record["source_refs"])) != len(record["source_refs"]):
-            raise GovernanceError(f"Proposal-v2 contains duplicate source refs at {path}.")
+            raise GovernanceError(f"{label} contains duplicate source refs at {path}.")
+        original_fields = [
+            "proposal_id", "project", "subject", "predicate", "object", "proposed_at",
+            "valid_from", "actor", "rationale", "submission_id", "payload_digest",
+        ]
+        if is_v3:
+            original_fields.append("valid_to")
         original = {
             field: record[field]
-            for field in (
-                "proposal_id", "project", "subject", "predicate", "object", "proposed_at",
-                "valid_from", "actor", "rationale", "submission_id", "payload_digest",
-            )
+            for field in original_fields
         }
         original_evidence_ids = list(record["evidence_ids"])
         original_source_refs = list(record["source_refs"])
@@ -329,6 +359,10 @@ def _validate_proposal_record(record: dict, path: Path) -> dict:
         record[field] = _line(record[field], field)
     record["proposed_at"] = _parse_time(record["proposed_at"], "proposed_at")
     record["valid_from"] = _parse_time(record["valid_from"], "valid_from")
+    if is_v3:
+        record["valid_to"] = _parse_time(record["valid_to"], "valid_to")
+        if record["valid_to"] <= record["valid_from"]:
+            raise GovernanceError(f"Proposal-v3 valid_to must be later than valid_from at {path}.")
     record["actor"] = _line(record["actor"], "actor", maximum=200)
     if record["requested_authority"] not in PROPOSAL_AUTHORITIES:
         raise GovernanceError(f"Invalid proposal authority at {path}.")
@@ -339,20 +373,20 @@ def _validate_proposal_record(record: dict, path: Path) -> dict:
     record["evidence_ids"] = _validate_evidence_ids(record.get("evidence_ids"))
     record["source_refs"] = _validate_source_refs(record.get("source_refs"))
     record["rationale"] = str(record.get("rationale") or "")[:4000]
-    if is_v2:
+    if is_versioned:
         record["submission_id"] = validate_id(record["submission_id"], "submission")
         record["payload_digest"] = _sha256(record["payload_digest"], "payload_digest")
         if record["source_channel"] not in SOURCE_CHANNELS:
             raise GovernanceError(f"Invalid proposal source_channel at {path}.")
         if record["actor"] != "mcp:unverified" or record["requested_authority"] != "agent_proposal":
-            raise GovernanceError(f"Proposal-v2 has invalid server-stamped provenance at {path}.")
+            raise GovernanceError(f"Proposal-v{version} has invalid server-stamped provenance at {path}.")
         normalized = {field: record[field] for field in original}
         if (
             normalized != original
             or record["evidence_ids"] != original_evidence_ids
             or record["source_refs"] != original_source_refs
         ):
-            raise GovernanceError(f"Proposal-v2 contains non-canonical field encodings at {path}.")
+            raise GovernanceError(f"Proposal-v{version} contains non-canonical field encodings at {path}.")
         normalized_sources = []
         for source_ref in record["source_refs"]:
             match = SOURCE_REF_RE.fullmatch(source_ref)
@@ -362,10 +396,10 @@ def _validate_proposal_record(record: dict, path: Path) -> dict:
                 _submission_source_uri(locator) + "@sha256:" + match.group(1).lower()
             )
         if record["source_refs"] != normalized_sources:
-            raise GovernanceError(f"Proposal-v2 source refs are not canonically normalized at {path}.")
+            raise GovernanceError(f"Proposal-v{version} source refs are not canonically normalized at {path}.")
         canonical_sources = sorted(record["source_refs"], key=canonical_json_bytes)
         if record["source_refs"] != canonical_sources:
-            raise GovernanceError(f"Proposal-v2 source refs are not in canonical order at {path}.")
+            raise GovernanceError(f"Proposal-v{version} source refs are not in canonical order at {path}.")
     return record
 
 
@@ -626,6 +660,7 @@ SUBMISSION_FIELDS = {
     "source_refs",
     "evidence",
 }
+MEMORY_SUBMISSION_FIELDS = SUBMISSION_FIELDS | {"valid_to"}
 EVIDENCE_DESCRIPTOR_FIELDS = {
     "kind",
     "source_uri",
@@ -871,6 +906,47 @@ def normalize_proposal_submission(request: dict) -> tuple[str, dict, list[dict]]
     return submission_id, payload, normalized_evidence
 
 
+def normalize_agent_memory_submission(
+    request: dict,
+    lifecycle: AgentMemoryLifecyclePolicy,
+) -> tuple[str, dict, list[dict]]:
+    """Normalize an autonomous proposal-v3 request with a digest-bound lease."""
+    lifecycle.validate()
+    value = _closed_object(
+        request,
+        MEMORY_SUBMISSION_FIELDS,
+        "autonomous memory submission",
+        optional={"valid_to"},
+    )
+    base_request = {field: value[field] for field in SUBMISSION_FIELDS}
+    submission_id, payload, descriptors = normalize_proposal_submission(base_request)
+    raw_valid_to = value.get("valid_to")
+    if raw_valid_to is not None and (
+        not isinstance(raw_valid_to, str) or not raw_valid_to.strip()
+    ):
+        raise GovernanceError("valid_to must be a non-empty timezone-aware JSON string or null.")
+    start = datetime.fromisoformat(payload["valid_from"])
+    if raw_valid_to is not None:
+        valid_to = _parse_time(raw_valid_to, "valid_to")
+        end = datetime.fromisoformat(valid_to)
+    else:
+        try:
+            end = start + timedelta(days=lifecycle.default_ttl_days)
+        except OverflowError as exc:
+            raise GovernanceError(
+                "default agent-memory validity exceeds the ISO-8601 timestamp range."
+            ) from exc
+        valid_to = end.isoformat(timespec="microseconds")
+    if end <= start:
+        raise GovernanceError("valid_to must be later than valid_from.")
+    if end - start > timedelta(days=lifecycle.max_ttl_days):
+        raise GovernanceError(
+            f"agent-memory validity cannot exceed {lifecycle.max_ttl_days} days."
+        )
+    payload["valid_to"] = valid_to
+    return submission_id, payload, descriptors
+
+
 def submission_replay_key(project: str, submission_id: str) -> str:
     identity = {
         "project": _project(project),
@@ -926,13 +1002,17 @@ def _pending_usage(
     return projects, (len(root_paths), root_bytes)
 
 
-def _verify_v2_proposal_digest(
+def _verify_versioned_proposal_digest(
     proposal: dict,
     evidence: dict[str, dict],
     tombstones: dict[str, dict],
     status: str,
 ) -> bool:
-    """Verify a proposal-v2 digest, or explicitly allow terminal redacted evidence."""
+    """Verify a proposal-v2/v3 digest, or allow terminal redacted evidence."""
+    version = proposal.get("format_version")
+    if version not in {PROPOSAL_V2_FORMAT_VERSION, PROPOSAL_FORMAT_VERSION}:
+        raise GovernanceError("Versioned proposal digest verification requires v2 or v3.")
+    label = f"Proposal-v{version}"
     descriptors: list[dict] = []
     descriptor_keys: set[bytes] = set()
     has_tombstoned_evidence = False
@@ -942,18 +1022,18 @@ def _verify_v2_proposal_digest(
             tombstone = tombstones.get(evidence_id)
             if not tombstone or tombstone.get("item_type") != "evidence":
                 raise GovernanceError(
-                    f"Proposal-v2 references missing evidence without a tombstone: {evidence_id}"
+                    f"{label} references missing evidence without a tombstone: {evidence_id}"
                 )
             if status == "pending":
                 raise GovernanceError(
-                    f"Pending proposal-v2 references tombstoned evidence: {evidence_id}"
+                    f"Pending {label.lower()} references tombstoned evidence: {evidence_id}"
                 )
             has_tombstoned_evidence = True
             continue
         if record["project"] != proposal["project"]:
-            raise GovernanceError(f"Proposal-v2 evidence belongs to another project: {evidence_id}")
+            raise GovernanceError(f"{label} evidence belongs to another project: {evidence_id}")
         if record["actor"] != "mcp:unverified":
-            raise GovernanceError(f"Proposal-v2 evidence has invalid provenance: {evidence_id}")
+            raise GovernanceError(f"{label} evidence has invalid provenance: {evidence_id}")
         descriptor = {
             "kind": record["kind"],
             "source_uri": _submission_source_uri(record["source_uri"]),
@@ -963,11 +1043,11 @@ def _verify_v2_proposal_digest(
         }
         key = canonical_json_bytes(descriptor)
         if key in descriptor_keys:
-            raise GovernanceError("Proposal-v2 resolves to duplicate evidence descriptors.")
+            raise GovernanceError(f"{label} resolves to duplicate evidence descriptors.")
         descriptor_keys.add(key)
         descriptors.append(descriptor)
     if descriptors != sorted(descriptors, key=canonical_json_bytes):
-        raise GovernanceError("Proposal-v2 evidence descriptors are not in canonical order.")
+        raise GovernanceError(f"{label} evidence descriptors are not in canonical order.")
     if has_tombstoned_evidence:
         return False
     payload = {
@@ -982,12 +1062,16 @@ def _verify_v2_proposal_digest(
         "source_refs": proposal["source_refs"],
         "evidence": descriptors,
     }
+    digest_domain = SUBMISSION_DIGEST_DOMAIN
+    if version == PROPOSAL_FORMAT_VERSION:
+        payload["valid_to"] = proposal["valid_to"]
+        digest_domain = MEMORY_SUBMISSION_DIGEST_DOMAIN
     digest = hashlib.sha256(
-        SUBMISSION_DIGEST_DOMAIN + canonical_json_bytes(payload)
+        digest_domain + canonical_json_bytes(payload)
     ).hexdigest()
     if digest != proposal["payload_digest"]:
         raise GovernanceError(
-            f"Proposal-v2 payload digest mismatch: {proposal['proposal_id']}"
+            f"{label} payload digest mismatch: {proposal['proposal_id']}"
         )
     return True
 
@@ -999,16 +1083,27 @@ def submit_proposal_bundle(
     request_bytes: int,
     allowed_projects: set[str],
     limits: ProposalLimits,
+    agent_lifecycle: AgentMemoryLifecyclePolicy | None = None,
     lock_timeout: float,
     recover_stale: bool,
 ) -> dict:
-    """Atomically create Phase 5A evidence metadata and one proposal-v2 record."""
+    """Atomically create a proposal-v2 or autonomous lifecycle proposal-v3 bundle."""
     limits.validate()
     if type(request_bytes) is not int or request_bytes < 1 or request_bytes > limits.max_request_bytes:
         raise GovernanceError(
             f"proposal request exceeds the {limits.max_request_bytes}-byte limit."
         )
-    submission_id, payload, descriptors = normalize_proposal_submission(request)
+    if agent_lifecycle is None:
+        proposal_version = PROPOSAL_V2_FORMAT_VERSION
+        digest_domain = SUBMISSION_DIGEST_DOMAIN
+        submission_id, payload, descriptors = normalize_proposal_submission(request)
+    else:
+        proposal_version = PROPOSAL_FORMAT_VERSION
+        digest_domain = MEMORY_SUBMISSION_DIGEST_DOMAIN
+        submission_id, payload, descriptors = normalize_agent_memory_submission(
+            request,
+            agent_lifecycle,
+        )
     if len(payload["source_refs"]) + len(descriptors) > limits.max_reference_count:
         raise GovernanceError(
             f"proposal references exceed the {limits.max_reference_count}-item limit."
@@ -1017,7 +1112,7 @@ def submit_proposal_bundle(
     load_root_identity(root, required=True)
     _assert_allowed_project(root, project, allowed_projects)
     payload_digest = hashlib.sha256(
-        SUBMISSION_DIGEST_DOMAIN + canonical_json_bytes(payload)
+        digest_domain + canonical_json_bytes(payload)
     ).hexdigest()
 
     with WriterLock(
@@ -1039,7 +1134,10 @@ def submit_proposal_bundle(
             )
         matches = [
             item for item in proposals.values()
-            if item.get("format_version") == PROPOSAL_FORMAT_VERSION
+            if item.get("format_version") in {
+                PROPOSAL_V2_FORMAT_VERSION,
+                PROPOSAL_FORMAT_VERSION,
+            }
             and item.get("project") == project
             and item.get("submission_id") == submission_id
         ]
@@ -1051,7 +1149,20 @@ def submit_proposal_bundle(
                 raise GovernanceError(
                     "submission_id cannot be replayed because tombstoned evidence prevents digest verification."
                 )
-            if prior.get("payload_digest") != payload_digest:
+            digest_matches = prior.get("payload_digest") == payload_digest
+            if (
+                not digest_matches
+                and prior.get("format_version") == PROPOSAL_V2_FORMAT_VERSION
+                and proposal_version == PROPOSAL_FORMAT_VERSION
+            ):
+                legacy_payload = {
+                    key: value for key, value in payload.items() if key != "valid_to"
+                }
+                legacy_digest = hashlib.sha256(
+                    SUBMISSION_DIGEST_DOMAIN + canonical_json_bytes(legacy_payload)
+                ).hexdigest()
+                digest_matches = prior.get("payload_digest") == legacy_digest
+            if not digest_matches:
                 raise GovernanceError(
                     "submission_id was already used with a different normalized payload."
                 )
@@ -1087,7 +1198,7 @@ def submit_proposal_bundle(
 
         proposal_id = new_id("proposal")
         proposal = {
-            "format_version": PROPOSAL_FORMAT_VERSION,
+            "format_version": proposal_version,
             "record_type": "proposal",
             "proposal_id": proposal_id,
             "project": project,
@@ -1106,6 +1217,8 @@ def submit_proposal_bundle(
             "payload_digest": payload_digest,
             "source_channel": "mcp",
         }
+        if proposal_version == PROPOSAL_FORMAT_VERSION:
+            proposal["valid_to"] = payload["valid_to"]
         proposal_target = proposal_path(root, project, proposal_id)
         proposal_bytes = _json_bytes(proposal)
         validated_evidence: dict[str, dict] = {}
@@ -1113,13 +1226,15 @@ def submit_proposal_bundle(
             validated = _validate_evidence_record(dict(evidence_record), evidence_target)
             validated_evidence[validated["evidence_id"]] = validated
         validated_proposal = _validate_proposal_record(dict(proposal), proposal_target)
-        if not _verify_v2_proposal_digest(
+        if not _verify_versioned_proposal_digest(
             validated_proposal,
             validated_evidence,
             {},
             "pending",
         ):
-            raise GovernanceError("Generated proposal-v2 bundle failed digest verification.")
+            raise GovernanceError(
+                f"Generated proposal-v{proposal_version} bundle failed digest verification."
+            )
         new_bytes = len(proposal_bytes) + sum(len(item[2]) for item in evidence_records)
         new_records = 1 + len(evidence_records)
         project_usage, root_usage = _pending_usage(root, proposals, evidence, statuses)
@@ -1541,7 +1656,10 @@ def load_governance(root: Path) -> tuple[dict[str, dict], dict[str, dict], dict[
     statuses = proposal_statuses(proposals, events, tombstones)
     submission_keys: set[tuple[str, str]] = set()
     for proposal in proposals.values():
-        if proposal.get("format_version") != PROPOSAL_FORMAT_VERSION:
+        if proposal.get("format_version") not in {
+            PROPOSAL_V2_FORMAT_VERSION,
+            PROPOSAL_FORMAT_VERSION,
+        }:
             continue
         key = (proposal["project"], proposal["submission_id"])
         if key in submission_keys:
@@ -1549,7 +1667,7 @@ def load_governance(root: Path) -> tuple[dict[str, dict], dict[str, dict], dict[
                 f"Duplicate proposal submission identity: {proposal['project']}/{proposal['submission_id']}"
             )
         submission_keys.add(key)
-        proposal["_payload_digest_verified"] = _verify_v2_proposal_digest(
+        proposal["_payload_digest_verified"] = _verify_versioned_proposal_digest(
             proposal,
             evidence,
             tombstones,
@@ -1805,7 +1923,7 @@ def accept_proposal(
             "status": "accepted",
             "authority": authority,
             "valid_from": _parse_time(proposal["valid_from"], "valid_from"),
-            "valid_to": None,
+            "valid_to": proposal.get("valid_to"),
             "recorded_at": now,
             "transitioned_at": now,
             "proposal_id": proposal["proposal_id"],
@@ -1849,11 +1967,21 @@ def accept_proposal(
     }
 
 
-def _overlapping_current_claims(claims: dict[str, dict], proposal: dict) -> list[dict]:
+def _overlapping_current_claims(
+    claims: dict[str, dict],
+    proposal: dict,
+    *,
+    at: str | None = None,
+) -> list[dict]:
     candidate_start = _parse_time(proposal["valid_from"], "valid_from")
+    moment = at or utc_now()
     matches = []
     for claim in claims.values():
         if claim["status"] != "accepted":
+            continue
+        if claim["valid_from"] > moment:
+            continue
+        if claim.get("valid_to") and claim["valid_to"] <= moment:
             continue
         if (
             claim["project"],
@@ -1889,6 +2017,7 @@ def _agent_memory_terminal_result(
     events: dict[str, dict],
     claims: dict[str, dict],
 ) -> dict:
+    moment = utc_now()
     related_events = sorted(
         (
             event
@@ -1910,7 +2039,6 @@ def _agent_memory_terminal_result(
             raise GovernanceError(
                 "Accepted autonomous memory proposal has no canonical claim."
             )
-        moment = utc_now()
         if claim["status"] != "accepted":
             terminal_status = claim["status"]
         elif claim["valid_from"] > moment:
@@ -1933,6 +2061,7 @@ def _agent_memory_terminal_result(
                 "proposal_id": proposal["proposal_id"],
                 "claim_id": claim["claim_id"],
                 "authority": claim["authority"],
+                "valid_to": claim.get("valid_to"),
                 "candidate_activated": True,
                 "conflict_detected": False,
                 "terminal_status": terminal_status,
@@ -1952,7 +2081,7 @@ def _agent_memory_terminal_result(
             "terminal_status": terminal_status,
             "activation_replay": True,
         }
-    existing = _overlapping_current_claims(claims, proposal)
+    existing = _overlapping_current_claims(claims, proposal, at=moment)
     same = next((item for item in existing if item["object"] == proposal["object"]), None)
     selected = claims.get(event.get("target_id") or "") or same or (
         existing[0] if existing else None
@@ -1983,9 +2112,18 @@ def _agent_memory_terminal_result(
         autonomous_terminal
         and event["action"] == "proposal_deferred"
         and event.get("reason_code") == "out_of_scope"
-        and proposal["valid_from"] > utc_now()
+        and proposal["valid_from"] > moment
     ):
         action = "future_deferred"
+        conflict = False
+    elif (
+        autonomous_terminal
+        and event["action"] == "proposal_deferred"
+        and event.get("reason_code") == "out_of_scope"
+        and proposal.get("valid_to")
+        and proposal["valid_to"] <= moment
+    ):
+        action = "expired_deferred"
         conflict = False
     elif event["action"] == "proposal_rejected":
         action = "terminal_rejected"
@@ -2048,7 +2186,8 @@ def activate_agent_memory(
             return _agent_memory_terminal_result(proposal, events, claims)
         _assert_evidence(root, proposal, evidence)
 
-        if proposal["valid_from"] > utc_now():
+        moment = utc_now()
+        if proposal["valid_from"] > moment:
             transaction_id = new_id("transaction")
             event, relative = _event_record(
                 action="proposal_deferred",
@@ -2076,7 +2215,35 @@ def activate_agent_memory(
                 **transaction,
             }
 
-        existing = _overlapping_current_claims(claims, proposal)
+        if proposal.get("valid_to") and proposal["valid_to"] <= moment:
+            transaction_id = new_id("transaction")
+            event, relative = _event_record(
+                action="proposal_deferred",
+                actor=actor,
+                transaction_id=transaction_id,
+                project=proposal["project"],
+                proposal_id=proposal["proposal_id"],
+                reason_code="out_of_scope",
+            )
+            transaction = apply_transaction(
+                root,
+                transaction_id=transaction_id,
+                operation="agent-memory-expired-defer",
+                actor=actor,
+                changes=[FileChange(root / relative, _json_bytes(event))],
+            )
+            return {
+                "action": "expired_deferred",
+                "proposal_id": proposal["proposal_id"],
+                "candidate_activated": False,
+                "conflict_detected": False,
+                "terminal_status": "deferred",
+                "terminal_reason_code": "out_of_scope",
+                "activation_replay": False,
+                **transaction,
+            }
+
+        existing = _overlapping_current_claims(claims, proposal, at=moment)
         same = next((item for item in existing if item["object"] == proposal["object"]), None)
         if same is not None or existing:
             selected = same or existing[0]
@@ -2115,7 +2282,8 @@ def activate_agent_memory(
             for item in claims.values()
             if item["status"] == "accepted"
             and item["authority"] == AGENT_MEMORY_AUTHORITY
-            and item.get("valid_to") is None
+            and item["valid_from"] <= moment
+            and (item.get("valid_to") is None or item["valid_to"] > moment)
         ]
         project_count = sum(
             1 for item in active_agent_claims if item["project"] == proposal["project"]
@@ -2170,7 +2338,7 @@ def activate_agent_memory(
             "status": "accepted",
             "authority": AGENT_MEMORY_AUTHORITY,
             "valid_from": _parse_time(proposal["valid_from"], "valid_from"),
-            "valid_to": None,
+            "valid_to": proposal.get("valid_to"),
             "recorded_at": now,
             "transitioned_at": now,
             "proposal_id": proposal["proposal_id"],
@@ -2210,6 +2378,7 @@ def activate_agent_memory(
         "proposal_id": proposal["proposal_id"],
         "claim_id": claim_id,
         "authority": AGENT_MEMORY_AUTHORITY,
+        "valid_to": claim.get("valid_to"),
         "candidate_activated": True,
         "conflict_detected": False,
         "activation_replay": False,
@@ -2225,11 +2394,15 @@ def remember_memory_bundle(
     allowed_projects: set[str],
     proposal_limits: ProposalLimits,
     memory_limits: AgentMemoryLimits,
+    lifecycle_policy: AgentMemoryLifecyclePolicy = AgentMemoryLifecyclePolicy(),
     lock_timeout: float,
     recover_stale: bool,
 ) -> dict:
     """Persist and activate one bounded agent-curated memory with replay safety."""
-    _, payload, descriptors = normalize_proposal_submission(request)
+    _, payload, descriptors = normalize_agent_memory_submission(
+        request,
+        lifecycle_policy,
+    )
     if payload["sensitivity"] != "normal" or any(
         item["sensitivity"] != "normal" for item in descriptors
     ):
@@ -2242,6 +2415,7 @@ def remember_memory_bundle(
         request_bytes=request_bytes,
         allowed_projects=allowed_projects,
         limits=proposal_limits,
+        agent_lifecycle=lifecycle_policy,
         lock_timeout=lock_timeout,
         recover_stale=recover_stale,
     )
@@ -2426,7 +2600,7 @@ def supersede_claim(
             "status": "accepted",
             "authority": authority,
             "valid_from": valid_from,
-            "valid_to": None,
+            "valid_to": proposal.get("valid_to"),
             "recorded_at": now,
             "transitioned_at": now,
             "proposal_id": proposal["proposal_id"],
@@ -2544,7 +2718,10 @@ def delete_item(
             "reason_code": _assert_reason(reason_code),
             "prior_sha256": prior_hash,
         }
-        if kind == "proposal" and record.get("format_version") == PROPOSAL_FORMAT_VERSION:
+        if kind == "proposal" and record.get("format_version") in {
+            PROPOSAL_V2_FORMAT_VERSION,
+            PROPOSAL_FORMAT_VERSION,
+        }:
             tombstone["submission_replay_key"] = submission_replay_key(
                 record["project"],
                 record["submission_id"],
@@ -2734,13 +2911,13 @@ def sync_governance_projection(con: sqlite3.Connection, root: Path) -> dict:
         for proposal_id, record in proposals.items():
             con.execute(
                 """INSERT INTO governance_proposals(
-                       proposal_id,path,format_version,project,subject,predicate,object,status,proposed_at,valid_from,
+                       proposal_id,path,format_version,project,subject,predicate,object,status,proposed_at,valid_from,valid_to,
                        actor,requested_authority,sensitivity,evidence_ids_json,source_refs_json,
                        submission_id,payload_digest,source_channel,content_hash
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     proposal_id, record["path"], record["format_version"], record["project"], record["subject"], record["predicate"],
-                    record["object"], statuses[proposal_id], record["proposed_at"], record["valid_from"],
+                    record["object"], statuses[proposal_id], record["proposed_at"], record["valid_from"], record.get("valid_to"),
                     record["actor"], record["requested_authority"], record["sensitivity"],
                     json.dumps(record.get("evidence_ids", []), ensure_ascii=False),
                     json.dumps(record.get("source_refs", []), ensure_ascii=False),

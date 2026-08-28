@@ -58,7 +58,7 @@ class IndexIntegrationTests(unittest.TestCase):
         self.assertEqual(8, stats["docs"])
         self.assertEqual(6, stats["active_docs"])
         self.assertEqual(2, stats["archive_docs"])
-        self.assertEqual(3, stats["index_schema_version"])
+        self.assertEqual(4, stats["index_schema_version"])
         self.assertEqual("ok", quick_check)
 
     def test_changed_document_is_reindexed_without_touching_others(self) -> None:

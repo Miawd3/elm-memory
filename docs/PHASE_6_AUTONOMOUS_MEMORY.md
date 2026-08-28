@@ -1,6 +1,6 @@
 # Phase 6A — Autonomous agent memory
 
-Status: local implementation and regression acceptance complete; hosted CI and merge pending
+Status: implemented, hosted-validated, and merged
 
 Date: 2026-08-27
 
@@ -171,11 +171,11 @@ The local acceptance suite proves:
 
 ## 8. Next slice
 
-Phase 6B should add autonomous maintenance, not human ratification. Its first
-design problem is a deterministic resolver for stale/conflicting agent memory:
-source freshness, authority precedence, explicit expiry, reversible
-supersession, and bounded compaction must be tested before any automatic update
-or forgetting tool is exposed.
+Phase 6B adds autonomous maintenance, not human ratification. Phase 6B.1 begins
+with digest-bound validity leases and non-destructive expiry while preserving the
+exact eight-tool autonomous surface. Source-verified compare-and-swap
+supersession and logical compaction remain separately gated in
+[PHASE_6B_AUTONOMOUS_MAINTENANCE.md](PHASE_6B_AUTONOMOUS_MAINTENANCE.md).
 
 Real-world task validation remains a parallel evidence track. It should measure
 whether autonomous writes improve later task correctness and token use without

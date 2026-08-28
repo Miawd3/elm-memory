@@ -11,7 +11,7 @@ from .identity import (
 )
 
 
-INDEX_SCHEMA_VERSION = 3
+INDEX_SCHEMA_VERSION = 4
 
 
 class UnsupportedSchemaError(RuntimeError):
@@ -150,6 +150,7 @@ def _create_latest(con: sqlite3.Connection) -> None:
             status TEXT NOT NULL,
             proposed_at TEXT NOT NULL,
             valid_from TEXT NOT NULL,
+            valid_to TEXT,
             actor TEXT NOT NULL,
             requested_authority TEXT NOT NULL,
             sensitivity TEXT NOT NULL,
@@ -378,6 +379,13 @@ def _migrate_two_to_three(con: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_three_to_four(con: sqlite3.Connection) -> None:
+    con.execute("ALTER TABLE governance_proposals ADD COLUMN valid_to TEXT")
+    con.execute(
+        "INSERT OR REPLACE INTO elm_meta(key,value) VALUES('index_schema_version','4')"
+    )
+
+
 def ensure_schema(con: sqlite3.Connection) -> None:
     version = schema_version(con)
     if version is None:
@@ -402,6 +410,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             elif version == 2:
                 _migrate_two_to_three(con)
                 version = 3
+            elif version == 3:
+                _migrate_three_to_four(con)
+                version = 4
             else:
                 raise SchemaMigrationError(f"No migration path from index schema {version}.")
         con.commit()

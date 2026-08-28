@@ -1,6 +1,6 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: active staged architecture; Phases 1–5A verified; Phase 6A implemented locally
+Status: active staged architecture; Phases 1–6A verified and merged; Phase 6B.1 locally validated
 
 Last updated: 2026-08-27
 
@@ -54,9 +54,12 @@ mutation remain unavailable.
 - Phase 3 is merged and live-validated: immutable proposals, reference-only evidence metadata, canonical claim Markdown, explicit lifecycle transitions, valid/recorded-time history, contradictions, tombstones, and recoverable transactions.
 - Phase 4 is implemented and host-validated: a seven-tool read-only MCP adapter delegates to the CLI JSON contract, reports exact index readiness, and returns equivalent stable source identities through Antigravity/Gemini and Codex.
 - Phase 5A is implemented and locally verified: an explicit proposal-only profile adds propose/list/non-signable-preview, while the process default remains the exact Phase 4 read surface and accepted state is unreachable through MCP.
-- Phase 6A is implemented locally: an explicit autonomous profile adds one
+- Phase 6A is verified and merged: an explicit autonomous profile adds one
   bounded `remember_memory` tool, labels active writes `agent_curated`, reuses
   exact duplicates, and defers conflicts or quota overflow.
+- Phase 6B.1 is implemented and locally validated: new autonomous claims use
+  digest-bound validity leases, expire non-destructively, and stop consuming
+  active quota after expiry without expanding the MCP tool surface.
 - Raw evidence snapshots, autonomous conflict resolution, destructive or
   arbitrary-authority MCP mutation, embeddings, and model summarization remain
   deferred.
@@ -702,9 +705,11 @@ Phase 6A adds an explicit autonomous MCP profile with one append-only
 untrusted data, rank below stronger current sources, reuse exact duplicates,
 and defer conflicts or quota overflow instead of silently replacing memory.
 
-Phase 6B will address autonomous expiry, conflict resolution, reversible
-supersession, and compaction. The implemented contract is in
-[PHASE_6_AUTONOMOUS_MEMORY.md](PHASE_6_AUTONOMOUS_MEMORY.md).
+Phase 6B addresses autonomous expiry, conflict resolution, reversible
+supersession, and compaction. Phase 6B.1 implements digest-bound validity leases;
+later source-backed replacement and logical compaction remain separately gated.
+The contracts are in [PHASE_6_AUTONOMOUS_MEMORY.md](PHASE_6_AUTONOMOUS_MEMORY.md)
+and [PHASE_6B_AUTONOMOUS_MAINTENANCE.md](PHASE_6B_AUTONOMOUS_MAINTENANCE.md).
 
 ### Phase 7 — Optional semantic retrieval
 
@@ -806,15 +811,14 @@ first public tag.
 
 ## 21. Immediate next implementation slice
 
-Phases 4 and 5A are complete. Phase 6A bounded autonomous memory was implemented
-locally on 2026-08-27 after the per-item human-approval path was removed from
-the active roadmap.
+Phases 4, 5A, and 6A are complete. Phase 6A bounded autonomous memory was merged
+after the per-item human-approval path was removed from the active roadmap.
 
-The active gate is **Phase 6A hosted validation** as defined in
-[PHASE_6_AUTONOMOUS_MEMORY.md](PHASE_6_AUTONOMOUS_MEMORY.md). The next
-implementation slice is Phase 6B autonomous maintenance: expiry, source
-freshness, conflict resolution, reversible supersession, and bounded
-compaction. Direct arbitrary Markdown writes, raw evidence snapshots,
+**Phase 6B.1 bounded validity leases** is implemented and locally validated as
+defined in [PHASE_6B_AUTONOMOUS_MAINTENANCE.md](PHASE_6B_AUTONOMOUS_MAINTENANCE.md).
+The next implementation gate is Phase 6B.2 source-verified compare-and-swap
+supersession; logical compaction remains a later, separately reviewed slice.
+Direct arbitrary Markdown writes, raw evidence snapshots,
 embeddings, authenticated multi-user scopes, and model summarization remain
 outside this gate.
 

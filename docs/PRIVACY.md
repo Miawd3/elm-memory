@@ -1,4 +1,4 @@
-# Privacy Model — Phase 6A
+# Privacy Model — Phase 6B.1
 
 ELM keeps durable project memory in inspectable files under the configured root.
 `<root>/.elm/index.sqlite` contains copied Markdown text and governed-record
@@ -26,6 +26,9 @@ to access to the indexed memory.
   source locators, hashes, and active `agent_curated` claims for allowlisted
   projects. It is bounded by request, reference, rate, pending-record, and
   active-memory quotas; it exposes no supersession, deletion, or policy tool.
+- New autonomous claims use bounded, digest-bound validity leases. Expiry hides
+  a claim from ordinary retrieval and frees active quota, but the canonical
+  proposal, claim, event, and reference metadata remain available in history.
 - Proposal-only input rejects raw-evidence fields, embedded URI credentials,
   and URI query strings. This reduces obvious leakage paths but cannot reliably
   detect every secret embedded in arbitrary candidate prose.

@@ -56,8 +56,11 @@ deletion, recovery, sync, identity, or policy changes through another MCP tool.
 If `status.mutation_mode` is `autonomous`, curate without asking for per-item
 human approval when the current task produces genuinely durable continuity.
 Supply the allowlisted project, a fresh random `submission_<uuid4>`, a
-timezone-aware `valid_from`, reference-only locators/hashes when available, and
-no raw evidence bytes. Use `remember_memory` only for decisions, constraints,
+timezone-aware `valid_from`, an explicit `valid_to` when the memory should live
+for less than the server default, reference-only locators/hashes when available,
+and no raw evidence bytes. The server derives a digest-bound default expiry when
+`valid_to` is omitted and rejects intervals beyond its configured maximum. Use
+`remember_memory` only for decisions, constraints,
 preferences, corrected terminology, meaningful milestones, and
 decision-sensitive open questions. Do not store raw chat, routine work,
 credentials, terminal output, or an inference whose uncertainty would make it
@@ -72,6 +75,13 @@ proposal: dispute, supersession, expiry, future dating, manual acceptance,
 rejection, and deferral all return explicit non-active outcomes. Autonomous
 mode exposes no supersession, dispute, deletion, recovery, sync, identity, or
 policy mutation.
+
+Treat expiry as reversible retrieval state, not deletion: expired memory is
+hidden from ordinary reads and no longer consumes active quota, while canonical
+history remains inspectable. Renew useful memory with a fresh bounded submission
+after expiry. Do not try to extend, shorten, supersede, or rewrite an existing
+claim in place; source-verified replacement and logical compaction remain later
+maintenance gates.
 
 Mutation-capable profiles fail indexed reads closed when canonical governance
 is newer than the disposable projection; freshness verification and the query
