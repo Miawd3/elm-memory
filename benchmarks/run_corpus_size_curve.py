@@ -20,6 +20,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PILOT_PATH = Path(__file__).with_name("run_heterogeneous_pilot.py")
 DEFAULT_TARGET_TOKENS = (2_000, 8_000, 32_000, 128_000)
 CURVE_CONDITIONS = ("elm", "full_corpus")
+CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 DISTRACTOR_DIRECTORY = Path("10_shared") / "corpus_curve"
 DISTRACTOR_PAYLOAD_CHARS = 3_600
 ANTIGRAVITY_TIMEOUT_GRACE_SECONDS = 10.0
@@ -348,6 +349,7 @@ def build_crossover_summary(
     *,
     min_consecutive_sizes: int,
     global_integrity_passed: bool = True,
+    claim_mode_enabled: bool = True,
 ) -> list[dict[str, Any]]:
     routes = sorted({item["route"] for item in aggregates})
     summaries: list[dict[str, Any]] = []
@@ -360,7 +362,8 @@ def build_crossover_summary(
         for index, item in enumerate(items):
             suffix = items[index:]
             if (
-                global_integrity_passed
+                claim_mode_enabled
+                and global_integrity_passed
                 and len(suffix) >= min_consecutive_sizes
                 and all(candidate["claim_qualified"] for candidate in suffix)
             ):
@@ -375,9 +378,13 @@ def build_crossover_summary(
                     "bounded_benchmark_evidence_only"
                     if crossover is not None
                     else (
-                        "no_qualified_crossover_observed"
-                        if global_integrity_passed
-                        else "global_integrity_gate_failed"
+                        "claim_mode_not_enabled"
+                        if not claim_mode_enabled
+                        else (
+                            "no_qualified_crossover_observed"
+                            if global_integrity_passed
+                            else "global_integrity_gate_failed"
+                        )
                     )
                 ),
             }
@@ -471,6 +478,29 @@ def route_models(arguments: argparse.Namespace) -> tuple[dict[str, str | None], 
     )
 
 
+def claim_capable_configuration_is_valid(
+    arguments: argparse.Namespace, models: dict[str, str | None]
+) -> bool:
+    if not arguments.claim_capable:
+        return True
+    requested = {
+        "codex": arguments.openai_model,
+        "gemini-antigravity": arguments.gemini_model,
+        "claude-antigravity": arguments.antigravity_claude_model,
+        "claude-code": arguments.claude_code_model,
+    }
+    return (
+        len(arguments.case_ids) * arguments.repeats
+        >= arguments.min_pairs_for_claim
+        and len(arguments.target_corpus_tokens) >= arguments.min_consecutive_sizes
+        and all(requested[route] and models[route] == requested[route] for route in arguments.routes)
+        and (
+            "codex" not in arguments.routes
+            or arguments.openai_reasoning_effort is not None
+        )
+    )
+
+
 def remaining_run_timeout(
     *, started: float, now: float, per_run_timeout: float, max_total_seconds: float
 ) -> float | None:
@@ -508,6 +538,7 @@ def execute_provider_cell(
             prompt=prompt,
             condition=cell["condition"],
             model=model,
+            reasoning_effort=arguments.openai_reasoning_effort,
             timeout=timeout,
         )
     if route.endswith("antigravity"):
@@ -585,6 +616,98 @@ def finalize_run(
     )
 
 
+def build_preflight_plan(arguments: argparse.Namespace) -> dict[str, Any]:
+    cases_by_id = {case["id"]: case for case in PILOT.load_cases()}
+    selected_cases = [cases_by_id[case_id] for case_id in arguments.case_ids]
+    schedule = build_schedule(
+        arguments.routes,
+        arguments.case_ids,
+        arguments.target_corpus_tokens,
+        arguments.repeats,
+    )
+    models, _ = route_models(arguments)
+    checks = validate_static_contract(
+        routes=arguments.routes,
+        case_ids=arguments.case_ids,
+        targets=arguments.target_corpus_tokens,
+        repeats=arguments.repeats,
+    )
+    checks["claim_capable_configuration_is_valid"] = (
+        claim_capable_configuration_is_valid(arguments, models)
+    )
+    sizes: list[dict[str, Any]] = []
+    prompt_estimates: list[dict[str, Any]] = []
+    prompt_cap_passed = True
+    with PILOT.disposable_directory("elm-corpus-size-plan-") as scratch:
+        for target in arguments.target_corpus_tokens:
+            record = prepare_scaled_root(scratch / "memory" / str(target), target)
+            sizes.append(
+                {
+                    key: record[key]
+                    for key in (
+                        "target_corpus_estimated_tokens",
+                        "actual_corpus_estimated_tokens",
+                        "active_markdown_documents",
+                        "distractor_documents",
+                        "corpus_utf8_bytes",
+                        "manifest_sha256",
+                        "rebuild_errors",
+                    )
+                }
+            )
+            for condition in CURVE_CONDITIONS:
+                estimates = [
+                    PILOT.estimate_tokens(
+                        PILOT.build_prompt(case, condition, record["corpus"])
+                    )
+                    for case in selected_cases
+                ]
+                maximum = max(estimates)
+                prompt_cap_passed = (
+                    prompt_cap_passed
+                    and maximum <= arguments.max_prompt_estimated_tokens
+                )
+                prompt_estimates.append(
+                    {
+                        "target_corpus_estimated_tokens": target,
+                        "condition": condition,
+                        "minimum_initial_prompt_estimated_tokens": min(estimates),
+                        "maximum_initial_prompt_estimated_tokens": maximum,
+                    }
+                )
+    checks["preflight_prompt_cap_passed"] = prompt_cap_passed
+    return {
+        "schema": "elm-corpus-size-curve-plan-v1",
+        "passed": all(checks.values()),
+        "configuration": {
+            "routes": list(arguments.routes),
+            "case_ids": list(arguments.case_ids),
+            "conditions": list(CURVE_CONDITIONS),
+            "target_corpus_estimated_tokens": list(arguments.target_corpus_tokens),
+            "repeats": arguments.repeats,
+            "planned_provider_runs": len(schedule),
+            "planned_pairs": len(schedule) // len(CURVE_CONDITIONS),
+            "claim_capable_mode": arguments.claim_capable,
+            "claim_scope": "bounded_benchmark_panel_only",
+            "statistical_unit": "case_repeat_pair",
+            "population_generalization_supported": False,
+            "codex_model_requested": arguments.openai_model,
+            "codex_reasoning_effort_requested": arguments.openai_reasoning_effort,
+            "max_prompt_estimated_tokens": arguments.max_prompt_estimated_tokens,
+            "max_total_seconds": arguments.max_total_seconds,
+            "max_runs": arguments.max_runs,
+        },
+        "checks": checks,
+        "sizes": sizes,
+        "prompt_estimates": prompt_estimates,
+        "privacy": {
+            "provider_calls_executed": False,
+            "personal_elm_opened": False,
+            "credentials_read_by_harness": False,
+        },
+    }
+
+
 def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
     cases_by_id = {case["id"]: case for case in PILOT.load_cases()}
     selected_cases = {case_id: cases_by_id[case_id] for case_id in arguments.case_ids}
@@ -599,6 +722,7 @@ def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
         "codex": {
             "version": PILOT.command_version("codex"),
             "model_requested": models["codex"],
+            "reasoning_effort_requested": arguments.openai_reasoning_effort,
         },
         "gemini-antigravity": {
             "version": PILOT.command_version("agy"),
@@ -686,6 +810,11 @@ def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
                             "actual_corpus_estimated_tokens"
                         ],
                         "active_markdown_documents": record["active_markdown_documents"],
+                        "reasoning_effort_requested": (
+                            arguments.openai_reasoning_effort
+                            if cell["route"] == "codex"
+                            else None
+                        ),
                         "initial_prompt_utf8_bytes": len(prompt.encode("utf-8")),
                         "initial_prompt_estimated_tokens": PILOT.estimate_tokens(prompt),
                     }
@@ -711,6 +840,9 @@ def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
                     section_key=record["section_keys"][cell["case_id"]],
                 )
                 runs.append(run)
+                if arguments.fail_fast and not run["passed"]:
+                    aborted_reason = "run_failed"
+                    break
                 if time.perf_counter() - started > arguments.max_total_seconds:
                     aborted_reason = "total_timeout"
                     break
@@ -732,6 +864,9 @@ def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
     expected_pair_count = len(schedule) // len(CURVE_CONDITIONS)
     checks = {
         **static_checks,
+        "claim_capable_configuration_is_valid": (
+            claim_capable_configuration_is_valid(arguments, models)
+        ),
         "preflight_prompt_cap_passed": preflight_prompt_cap_passed,
         "all_scheduled_runs_executed": len(runs) == len(schedule),
         "all_selected_runs_passed": len(runs) == len(schedule)
@@ -755,6 +890,7 @@ def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
         aggregates,
         min_consecutive_sizes=arguments.min_consecutive_sizes,
         global_integrity_passed=all(checks.values()),
+        claim_mode_enabled=arguments.claim_capable,
     )
     public_sizes = [
         {
@@ -780,6 +916,12 @@ def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
             "conditions": list(CURVE_CONDITIONS),
             "target_corpus_estimated_tokens": list(arguments.target_corpus_tokens),
             "repeats": arguments.repeats,
+            "claim_capable_mode": arguments.claim_capable,
+            "claim_scope": "bounded_benchmark_panel_only",
+            "statistical_unit": "case_repeat_pair",
+            "population_generalization_supported": False,
+            "fail_fast": arguments.fail_fast,
+            "codex_reasoning_effort_requested": arguments.openai_reasoning_effort,
             "timeout_seconds_per_run": arguments.timeout,
             "max_total_seconds": arguments.max_total_seconds,
             "max_prompt_estimated_tokens": arguments.max_prompt_estimated_tokens,
@@ -815,7 +957,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute", action="store_true", help="Authorize real host CLI runs.")
     parser.add_argument("--validate-only", action="store_true", help="Validate without model calls.")
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Build exact synthetic roots and prompt estimates without model calls.",
+    )
     parser.add_argument("--assert-pass", action="store_true")
+    parser.add_argument(
+        "--claim-capable",
+        action="store_true",
+        help="Enable crossover claims only with an explicit reproducible route configuration.",
+    )
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Stop after the first failed provider cell.",
+    )
     parser.add_argument("--routes", nargs="+", choices=PILOT.ROUTES, default=("codex",))
     parser.add_argument("--case-ids", nargs="+", default=("orion_storage",))
     parser.add_argument("--all-cases", action="store_true")
@@ -824,6 +981,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--codex-model", dest="openai_model")
+    parser.add_argument(
+        "--codex-reasoning-effort",
+        dest="openai_reasoning_effort",
+        choices=CODEX_REASONING_EFFORTS,
+    )
     parser.add_argument("--gemini-model")
     parser.add_argument("--antigravity-claude-model")
     parser.add_argument("--claude-code-model")
@@ -847,6 +1009,8 @@ def main() -> int:
     arguments.routes = tuple(dict.fromkeys(arguments.routes))
     arguments.case_ids = tuple(dict.fromkeys(arguments.case_ids))
     arguments.target_corpus_tokens = tuple(arguments.target_corpus_tokens)
+    if sum((arguments.execute, arguments.validate_only, arguments.plan_only)) > 1:
+        parser.error("--execute, --validate-only, and --plan-only are mutually exclusive")
     unknown_cases = sorted(set(arguments.case_ids) - set(all_case_ids))
     if unknown_cases:
         parser.error(f"unknown case ids: {', '.join(unknown_cases)}")
@@ -890,6 +1054,14 @@ def main() -> int:
         parser.error(
             f"planned provider runs ({planned_runs}) exceed --max-runs ({arguments.max_runs})"
         )
+    if arguments.claim_capable and not arguments.validate_only:
+        models, _ = route_models(arguments)
+        if not claim_capable_configuration_is_valid(arguments, models):
+            parser.error(
+                "--claim-capable requires at least the configured pair/size minima, "
+                "an explicit available model for every route, and explicit Codex "
+                "reasoning effort when Codex is selected"
+            )
     if arguments.validate_only:
         checks = validate_static_contract(
             routes=arguments.routes,
@@ -903,6 +1075,8 @@ def main() -> int:
             "checks": checks,
             "planned_provider_runs": planned_runs,
         }
+    elif arguments.plan_only:
+        result = build_preflight_plan(arguments)
     else:
         if not arguments.execute:
             parser.error("real provider runs require the explicit --execute flag")
