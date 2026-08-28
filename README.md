@@ -322,6 +322,7 @@ python benchmarks/run_phase5a_demo.py --assert-pass
 python benchmarks/run_phase5a_soak.py --assert-pass
 python benchmarks/run_heterogeneous_pilot.py --validate-only --assert-pass
 python benchmarks/run_corpus_size_curve.py --validate-only --assert-pass
+python benchmarks/run_holdout_confirmation.py --validate-only --assert-pass
 python examples/two-agent-handoff/run_hosts.py --assert-pass
 ```
 
@@ -366,6 +367,22 @@ rule are documented in
 The completed five-size, 60-call Codex panel found one qualifying 192k cell but
 no sustained benchmark-qualified crossover because the 128k cell passed only
 five of six paired comparisons.
+
+`python benchmarks/run_holdout_confirmation.py --validate-only --assert-pass`
+checks the separately frozen six-case confirmation contract. Its cases span
+six files and three projects; project-scoped near-miss distractors grow with
+the corpus, repetitions are technical rather than independent statistical
+units, and six no-memory controls fail closed on oracle leakage. `--plan-only`
+also verifies all 18 case/size context packets and the fixed 128k/192k/208k
+prompt envelope without provider calls. The protocol and current preflight-only
+acceptance state are documented in
+[docs/HOLDOUT_CONFIRMATION.md](docs/HOLDOUT_CONFIRMATION.md).
+The completed preregistered Codex run passed 78/78 calls. All six independent
+case summaries favored ELM at 128k, 192k, and 208k; median case-level token
+ratios were 0.714786, 0.503037, and 0.467141, with exact one-sided
+`p = 0.015625` at every size. This confirms a sustained large-corpus token
+advantage for that synthetic holdout panel only, not a universal crossover or
+real-world task-quality claim.
 
 ## Architecture boundary
 

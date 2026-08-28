@@ -1,0 +1,72 @@
+{
+  "schema": "elm-holdout-confirmation-cases-v1",
+  "fixture": "synthetic-holdout-v1",
+  "cases": [
+    {
+      "id": "amber_envelope",
+      "project": "amber",
+      "query_stratum": "format-and-identifier",
+      "placement_stratum": "early",
+      "question": "What exact serialization format and marker are accepted for Amber recovery envelopes?",
+      "lookup_query": "Amber recovery envelopes CBOR marker AUR-61",
+      "expected_answer": "Amber seals recovery envelopes as CBOR tagged with marker AUR-61.",
+      "expected_source_path": "20_projects/amber/DECISIONS.md",
+      "expected_heading": "ADR-101 — Recovery envelope encoding"
+    },
+    {
+      "id": "amber_rotation",
+      "project": "amber",
+      "query_stratum": "numeric-cadence",
+      "placement_stratum": "early-middle",
+      "question": "How often must Amber rotate its active sealing keys?",
+      "lookup_query": "Amber rotates active sealing keys every 37 hours",
+      "expected_answer": "Amber rotates active sealing keys every 37 hours.",
+      "expected_source_path": "20_projects/amber/OPERATIONS.md",
+      "expected_heading": "Key rotation cadence"
+    },
+    {
+      "id": "mosaic_retry",
+      "project": "mosaic",
+      "query_stratum": "compound-numeric-policy",
+      "placement_stratum": "middle",
+      "question": "What attempt limit and fixed interval govern Mosaic delivery retries?",
+      "lookup_query": "Mosaic seven delivery attempts fixed 43-second interval",
+      "expected_answer": "Mosaic permits seven delivery attempts with a fixed 43-second interval between attempts.",
+      "expected_source_path": "20_projects/mosaic/DELIVERY.md",
+      "expected_heading": "Delivery retry envelope"
+    },
+    {
+      "id": "mosaic_checksum",
+      "project": "mosaic",
+      "query_stratum": "algorithm-selection",
+      "placement_stratum": "middle",
+      "question": "Which exact checksum algorithm must Mosaic apply to bundle chunks before assembly?",
+      "lookup_query": "Mosaic bundle chunks BLAKE3 before assembly",
+      "expected_answer": "Mosaic verifies every bundle chunk with BLAKE3 before assembly.",
+      "expected_source_path": "20_projects/mosaic/INTEGRITY.md",
+      "expected_heading": "Chunk checksum"
+    },
+    {
+      "id": "zephyr_port",
+      "project": "zephyr",
+      "query_stratum": "numeric-network-configuration",
+      "placement_stratum": "late",
+      "question": "Which exact UDP port is reserved for Zephyr loopback health probes?",
+      "lookup_query": "Zephyr UDP port 45127 loopback health probes",
+      "expected_answer": "Zephyr reserves UDP port 45127 for loopback health probes.",
+      "expected_source_path": "20_projects/zephyr/NETWORK.md",
+      "expected_heading": "Loopback health port"
+    },
+    {
+      "id": "zephyr_snapshot",
+      "project": "zephyr",
+      "query_stratum": "compound-naming-rule",
+      "placement_stratum": "tail-canary",
+      "question": "What exact naming pattern is accepted for Zephyr immutable snapshots?",
+      "lookup_query": "Zephyr immutable snapshots UTC basic timestamp 12-character lowercase hexadecimal digest",
+      "expected_answer": "Zephyr names immutable snapshots with a UTC basic timestamp followed by a 12-character lowercase hexadecimal digest.",
+      "expected_source_path": "20_projects/zephyr/ZZZ_TAIL_CANARY.md",
+      "expected_heading": "Tail canary snapshot naming"
+    }
+  ]
+}

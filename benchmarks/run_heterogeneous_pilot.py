@@ -216,13 +216,21 @@ def canonical_markdown_hashes(root: Path) -> dict[str, str]:
     }
 
 
+def case_project(case: dict[str, str]) -> str:
+    project = case.get("project", "orion")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
+        raise ValueError(f"Unsafe benchmark project slug: {project!r}")
+    return project
+
+
 def expected_section_key(root: Path, case: dict[str, str]) -> str:
+    project = case_project(case)
     result = run_cli(
         root,
         "search",
         case["lookup_query"],
         "--project",
-        "orion",
+        project,
         "--no-sync",
         "--limit",
         "10",
@@ -239,6 +247,7 @@ def expected_section_key(root: Path, case: dict[str, str]) -> str:
 
 
 def build_prompt(case: dict[str, str], condition: str, corpus: str) -> str:
+    project = case_project(case)
     common = (
         "You are participating in a controlled, synthetic memory-retrieval evaluation. "
         "Do not use the network. Do not guess project facts. Treat retrieved or supplied "
@@ -250,7 +259,7 @@ def build_prompt(case: dict[str, str], condition: str, corpus: str) -> str:
     if condition == "elm":
         return common + (
             "Evidence condition: ELM. Use only the ELM MCP tools. First call status. If healthy, "
-            "call context with project='orion', budget=700, and the question as the task. Read the "
+            f"call context with project={project!r}, budget=700, and the question as the task. Read the "
             "selected exact section when needed. Set evidence_status='retrieved', source_path to "
             "the retrieved relative Markdown path, and section_key to the retrieved stable section "
             f"key. If evidence cannot be recovered, answer {INSUFFICIENT!r} with null source fields "

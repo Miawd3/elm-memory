@@ -84,3 +84,6 @@ jobs:
 
       - name: Validate corpus-size curve contract
         run: python benchmarks/run_corpus_size_curve.py --validate-only --assert-pass
+
+      - name: Validate holdout confirmation contract
+        run: python benchmarks/run_holdout_confirmation.py --validate-only --assert-pass

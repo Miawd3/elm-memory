@@ -265,3 +265,13 @@ effects; they do not erase them.
 The curve evaluates read-only retrieval efficiency only. It does not widen the
 MCP surface, enable accepted-state mutation, train a model, add embeddings, or
 advance Phase 5B.
+
+The independent next stage is frozen in
+[HOLDOUT_CONFIRMATION.md](HOLDOUT_CONFIRMATION.md). It uses six unseen cases
+across three projects, project-scoped near-miss growth, case-level statistics,
+no-memory leakage controls, and a context-safe 208k persistence point. Its
+preregistered 78-call Codex run later qualified all three holdout sizes and
+confirmed sustained large-corpus token advantage within that independent
+synthetic panel. The holdout result does not retroactively convert this
+development curve into population evidence or identify an exact universal
+crossover.
