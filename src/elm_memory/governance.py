@@ -23,9 +23,11 @@ from .locking import WriterLock
 
 CANONICAL_FORMAT_VERSION = 1
 PROPOSAL_V2_FORMAT_VERSION = 2
-PROPOSAL_FORMAT_VERSION = 3
+PROPOSAL_V3_FORMAT_VERSION = 3
+PROPOSAL_FORMAT_VERSION = 4
 SUBMISSION_DIGEST_DOMAIN = b"ELM-PROPOSAL-SUBMISSION-V1\x00"
 MEMORY_SUBMISSION_DIGEST_DOMAIN = b"ELM-AUTONOMOUS-SUBMISSION-V1\x00"
+MEMORY_CAS_SUBMISSION_DIGEST_DOMAIN = b"ELM-AUTONOMOUS-CAS-SUBMISSION-V1\x00"
 SUBMISSION_RETIREMENT_DOMAIN = b"ELM-PROPOSAL-SUBMISSION-RETIREMENT-V1\x00"
 ID_PREFIXES = {
     "proposal": "proposal_",
@@ -38,6 +40,7 @@ ID_PREFIXES = {
     "submission": "submission_",
 }
 PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+SOURCE_ROOT_ALIAS_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SOURCE_REF_RE = re.compile(r"^.+@sha256:([0-9a-fA-F]{64})$")
 ACCEPTED_AUTHORITIES = {
@@ -77,6 +80,8 @@ REASON_CODES = {
     "obsolete",
     "out_of_scope",
     "quota_exceeded",
+    "source_verification_failed",
+    "stale_cas_target",
     "user_request",
     "other",
 }
@@ -269,7 +274,7 @@ def _load_json(path: Path, record_type: str) -> dict:
         raise GovernanceError(f"Invalid {record_type} JSON at {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise GovernanceError(f"{record_type} record must be a JSON object: {path}")
-    allowed_versions = {1, 2, 3} if record_type == "proposal" else {1}
+    allowed_versions = {1, 2, 3, 4} if record_type == "proposal" else {1}
     format_version = value.get("format_version")
     if type(format_version) is not int or format_version not in allowed_versions:
         raise GovernanceError(
@@ -298,8 +303,13 @@ def _require_string_fields(record: dict, fields: set[str], path: Path, record_ty
 
 def _validate_proposal_record(record: dict, path: Path) -> dict:
     version = record.get("format_version")
-    is_versioned = version in {PROPOSAL_V2_FORMAT_VERSION, PROPOSAL_FORMAT_VERSION}
-    is_v3 = version == PROPOSAL_FORMAT_VERSION
+    is_versioned = version in {
+        PROPOSAL_V2_FORMAT_VERSION,
+        PROPOSAL_V3_FORMAT_VERSION,
+        PROPOSAL_FORMAT_VERSION,
+    }
+    has_lease = version in {PROPOSAL_V3_FORMAT_VERSION, PROPOSAL_FORMAT_VERSION}
+    is_v4 = version == PROPOSAL_FORMAT_VERSION
     if is_versioned:
         allowed = {
             "format_version", "record_type", "proposal_id", "project", "subject",
@@ -307,8 +317,10 @@ def _validate_proposal_record(record: dict, path: Path) -> dict:
             "requested_authority", "sensitivity", "evidence_ids", "source_refs",
             "rationale", "submission_id", "payload_digest", "source_channel",
         }
-        if is_v3:
+        if has_lease:
             allowed.add("valid_to")
+        if is_v4:
+            allowed.update({"supersedes_claim_id", "expected_claim_sha256"})
         label = f"Proposal-v{version}"
         unknown = sorted(set(record) - allowed)
         missing = sorted(allowed - set(record))
@@ -338,8 +350,10 @@ def _validate_proposal_record(record: dict, path: Path) -> dict:
             "proposal_id", "project", "subject", "predicate", "object", "proposed_at",
             "valid_from", "actor", "rationale", "submission_id", "payload_digest",
         ]
-        if is_v3:
+        if has_lease:
             original_fields.append("valid_to")
+        if is_v4:
+            original_fields.extend(("supersedes_claim_id", "expected_claim_sha256"))
         original = {
             field: record[field]
             for field in original_fields
@@ -359,10 +373,17 @@ def _validate_proposal_record(record: dict, path: Path) -> dict:
         record[field] = _line(record[field], field)
     record["proposed_at"] = _parse_time(record["proposed_at"], "proposed_at")
     record["valid_from"] = _parse_time(record["valid_from"], "valid_from")
-    if is_v3:
+    if has_lease:
         record["valid_to"] = _parse_time(record["valid_to"], "valid_to")
         if record["valid_to"] <= record["valid_from"]:
-            raise GovernanceError(f"Proposal-v3 valid_to must be later than valid_from at {path}.")
+            raise GovernanceError(f"Proposal-v{version} valid_to must be later than valid_from at {path}.")
+    if is_v4:
+        record["supersedes_claim_id"] = validate_id(
+            record["supersedes_claim_id"], "claim"
+        )
+        record["expected_claim_sha256"] = _sha256(
+            record["expected_claim_sha256"], "expected_claim_sha256"
+        )
     record["actor"] = _line(record["actor"], "actor", maximum=200)
     if record["requested_authority"] not in PROPOSAL_AUTHORITIES:
         raise GovernanceError(f"Invalid proposal authority at {path}.")
@@ -660,7 +681,11 @@ SUBMISSION_FIELDS = {
     "source_refs",
     "evidence",
 }
-MEMORY_SUBMISSION_FIELDS = SUBMISSION_FIELDS | {"valid_to"}
+MEMORY_SUBMISSION_FIELDS = SUBMISSION_FIELDS | {
+    "valid_to",
+    "supersedes_claim_id",
+    "expected_claim_sha256",
+}
 EVIDENCE_DESCRIPTOR_FIELDS = {
     "kind",
     "source_uri",
@@ -801,6 +826,117 @@ def _submission_source_uri(value: object) -> str:
     return source_uri
 
 
+def parse_source_root_specs(values: list[str]) -> dict[str, Path]:
+    """Parse trusted ``ALIAS=PATH`` verifier configuration from an operator surface."""
+    roots: dict[str, Path] = {}
+    for raw in values:
+        if not isinstance(raw, str) or "=" not in raw:
+            raise GovernanceError("source roots must use ALIAS=PATH.")
+        alias, raw_path = raw.split("=", 1)
+        alias = alias.strip().lower()
+        if not SOURCE_ROOT_ALIAS_RE.fullmatch(alias):
+            raise GovernanceError(
+                "source-root aliases must start with a lowercase letter and use only a-z, 0-9, _, or -."
+            )
+        if alias in roots:
+            raise GovernanceError(f"duplicate source-root alias: {alias}")
+        candidate = Path(raw_path.strip()).expanduser()
+        if not raw_path.strip() or candidate.is_symlink():
+            raise GovernanceError(f"source root must be an existing non-symlink directory: {alias}")
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise GovernanceError(f"source root does not exist: {alias}") from exc
+        if not resolved.is_dir():
+            raise GovernanceError(f"source root must be a directory: {alias}")
+        roots[alias] = resolved
+    return roots
+
+
+def _repo_source_parts(source_ref: str) -> tuple[str, str, str] | None:
+    match = SOURCE_REF_RE.fullmatch(source_ref)
+    if not match:
+        raise GovernanceError("source_ref must end with @sha256:<64-hex-digest>.")
+    locator = source_ref[: source_ref.lower().rfind("@sha256:")]
+    parsed = urlsplit(locator)
+    if parsed.scheme != "repo":
+        return None
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or not SOURCE_ROOT_ALIAS_RE.fullmatch(parsed.netloc)
+    ):
+        raise GovernanceError("CAS repo source_ref has an invalid alias or URI component.")
+    raw_path = parsed.path
+    if not raw_path.startswith("/") or "\\" in raw_path or "%" in raw_path:
+        raise GovernanceError("CAS repo source_ref must contain a plain POSIX relative path.")
+    pieces = raw_path[1:].split("/")
+    if not pieces or any(part in {"", ".", ".."} for part in pieces):
+        raise GovernanceError("CAS repo source_ref path is empty or traverses directories.")
+    relative = PurePosixPath(*pieces).as_posix()
+    return locator, parsed.netloc, relative
+
+
+def verify_cas_source_refs(
+    proposal: dict,
+    previous: dict | None,
+    source_roots: dict[str, Path],
+) -> list[dict]:
+    """Verify current repository bytes and same-locator continuity for one CAS proposal."""
+    if not source_roots:
+        raise GovernanceError("CAS requires at least one operator-configured source root.")
+    previous_locators = {
+        parts[0]
+        for source_ref in (previous or {}).get("source_refs", [])
+        if (parts := _repo_source_parts(source_ref)) is not None
+    }
+    verified: list[dict] = []
+    continuity = False
+    for source_ref in proposal.get("source_refs", []):
+        parts = _repo_source_parts(source_ref)
+        if parts is None:
+            continue
+        locator, alias, relative = parts
+        root = source_roots.get(alias)
+        if root is None:
+            raise GovernanceError(f"CAS source root is not configured: {alias}")
+        cursor = root
+        for piece in PurePosixPath(relative).parts:
+            cursor = cursor / piece
+            if cursor.is_symlink():
+                raise GovernanceError("CAS source path contains a symlink.")
+        try:
+            target = cursor.resolve(strict=True)
+            target.relative_to(root)
+        except (OSError, ValueError) as exc:
+            raise GovernanceError("CAS source path is missing or escapes its configured root.") from exc
+        if not target.is_file():
+            raise GovernanceError("CAS source path must resolve to a regular file.")
+        try:
+            observed = _hash_bytes(target.read_bytes())
+        except OSError as exc:
+            raise GovernanceError("CAS source could not be read during verification.") from exc
+        expected = source_ref[source_ref.lower().rfind("@sha256:") + 8 :].lower()
+        if observed != expected:
+            raise GovernanceError("CAS source digest does not match current repository bytes.")
+        continuity = continuity or locator in previous_locators
+        verified.append({
+            "source_ref": source_ref,
+            "root_alias": alias,
+            "relative_path": relative,
+            "observed_sha256": observed,
+        })
+    if not verified:
+        raise GovernanceError("CAS requires at least one verifiable repo:// source_ref.")
+    if previous is not None and not continuity:
+        raise GovernanceError(
+            "CAS requires a verified repo source locator already present on the target claim."
+        )
+    return verified
+
+
 def normalize_proposal_submission(request: dict) -> tuple[str, dict, list[dict]]:
     """Validate and normalize the closed Phase 5A submission payload."""
     value = _closed_object(request, SUBMISSION_FIELDS, "proposal submission")
@@ -910,13 +1046,13 @@ def normalize_agent_memory_submission(
     request: dict,
     lifecycle: AgentMemoryLifecyclePolicy,
 ) -> tuple[str, dict, list[dict]]:
-    """Normalize an autonomous proposal-v3 request with a digest-bound lease."""
+    """Normalize an autonomous leased request, optionally with v4 CAS preconditions."""
     lifecycle.validate()
     value = _closed_object(
         request,
         MEMORY_SUBMISSION_FIELDS,
         "autonomous memory submission",
-        optional={"valid_to"},
+        optional={"valid_to", "supersedes_claim_id", "expected_claim_sha256"},
     )
     base_request = {field: value[field] for field in SUBMISSION_FIELDS}
     submission_id, payload, descriptors = normalize_proposal_submission(base_request)
@@ -944,6 +1080,22 @@ def normalize_agent_memory_submission(
             f"agent-memory validity cannot exceed {lifecycle.max_ttl_days} days."
         )
     payload["valid_to"] = valid_to
+    raw_claim_id = value.get("supersedes_claim_id")
+    raw_claim_hash = value.get("expected_claim_sha256")
+    if (raw_claim_id is None) != (raw_claim_hash is None):
+        raise GovernanceError(
+            "supersedes_claim_id and expected_claim_sha256 must be supplied together."
+        )
+    if raw_claim_id is not None:
+        if not isinstance(raw_claim_id, str) or not isinstance(raw_claim_hash, str):
+            raise GovernanceError(
+                "CAS preconditions must be non-empty JSON strings."
+            )
+        payload["supersedes_claim_id"] = validate_id(raw_claim_id, "claim")
+        payload["expected_claim_sha256"] = _sha256(
+            raw_claim_hash,
+            "expected_claim_sha256",
+        )
     return submission_id, payload, descriptors
 
 
@@ -1008,10 +1160,14 @@ def _verify_versioned_proposal_digest(
     tombstones: dict[str, dict],
     status: str,
 ) -> bool:
-    """Verify a proposal-v2/v3 digest, or allow terminal redacted evidence."""
+    """Verify a proposal-v2/v3/v4 digest, or allow terminal redacted evidence."""
     version = proposal.get("format_version")
-    if version not in {PROPOSAL_V2_FORMAT_VERSION, PROPOSAL_FORMAT_VERSION}:
-        raise GovernanceError("Versioned proposal digest verification requires v2 or v3.")
+    if version not in {
+        PROPOSAL_V2_FORMAT_VERSION,
+        PROPOSAL_V3_FORMAT_VERSION,
+        PROPOSAL_FORMAT_VERSION,
+    }:
+        raise GovernanceError("Versioned proposal digest verification requires v2, v3, or v4.")
     label = f"Proposal-v{version}"
     descriptors: list[dict] = []
     descriptor_keys: set[bytes] = set()
@@ -1063,9 +1219,13 @@ def _verify_versioned_proposal_digest(
         "evidence": descriptors,
     }
     digest_domain = SUBMISSION_DIGEST_DOMAIN
-    if version == PROPOSAL_FORMAT_VERSION:
+    if version in {PROPOSAL_V3_FORMAT_VERSION, PROPOSAL_FORMAT_VERSION}:
         payload["valid_to"] = proposal["valid_to"]
         digest_domain = MEMORY_SUBMISSION_DIGEST_DOMAIN
+    if version == PROPOSAL_FORMAT_VERSION:
+        payload["supersedes_claim_id"] = proposal["supersedes_claim_id"]
+        payload["expected_claim_sha256"] = proposal["expected_claim_sha256"]
+        digest_domain = MEMORY_CAS_SUBMISSION_DIGEST_DOMAIN
     digest = hashlib.sha256(
         digest_domain + canonical_json_bytes(payload)
     ).hexdigest()
@@ -1087,7 +1247,7 @@ def submit_proposal_bundle(
     lock_timeout: float,
     recover_stale: bool,
 ) -> dict:
-    """Atomically create a proposal-v2 or autonomous lifecycle proposal-v3 bundle."""
+    """Atomically create a proposal-v2, autonomous v3, or CAS proposal-v4 bundle."""
     limits.validate()
     if type(request_bytes) is not int or request_bytes < 1 or request_bytes > limits.max_request_bytes:
         raise GovernanceError(
@@ -1098,12 +1258,16 @@ def submit_proposal_bundle(
         digest_domain = SUBMISSION_DIGEST_DOMAIN
         submission_id, payload, descriptors = normalize_proposal_submission(request)
     else:
-        proposal_version = PROPOSAL_FORMAT_VERSION
-        digest_domain = MEMORY_SUBMISSION_DIGEST_DOMAIN
         submission_id, payload, descriptors = normalize_agent_memory_submission(
             request,
             agent_lifecycle,
         )
+        if payload.get("supersedes_claim_id"):
+            proposal_version = PROPOSAL_FORMAT_VERSION
+            digest_domain = MEMORY_CAS_SUBMISSION_DIGEST_DOMAIN
+        else:
+            proposal_version = PROPOSAL_V3_FORMAT_VERSION
+            digest_domain = MEMORY_SUBMISSION_DIGEST_DOMAIN
     if len(payload["source_refs"]) + len(descriptors) > limits.max_reference_count:
         raise GovernanceError(
             f"proposal references exceed the {limits.max_reference_count}-item limit."
@@ -1136,6 +1300,7 @@ def submit_proposal_bundle(
             item for item in proposals.values()
             if item.get("format_version") in {
                 PROPOSAL_V2_FORMAT_VERSION,
+                PROPOSAL_V3_FORMAT_VERSION,
                 PROPOSAL_FORMAT_VERSION,
             }
             and item.get("project") == project
@@ -1153,7 +1318,7 @@ def submit_proposal_bundle(
             if (
                 not digest_matches
                 and prior.get("format_version") == PROPOSAL_V2_FORMAT_VERSION
-                and proposal_version == PROPOSAL_FORMAT_VERSION
+                and proposal_version == PROPOSAL_V3_FORMAT_VERSION
             ):
                 legacy_payload = {
                     key: value for key, value in payload.items() if key != "valid_to"
@@ -1217,8 +1382,11 @@ def submit_proposal_bundle(
             "payload_digest": payload_digest,
             "source_channel": "mcp",
         }
-        if proposal_version == PROPOSAL_FORMAT_VERSION:
+        if proposal_version in {PROPOSAL_V3_FORMAT_VERSION, PROPOSAL_FORMAT_VERSION}:
             proposal["valid_to"] = payload["valid_to"]
+        if proposal_version == PROPOSAL_FORMAT_VERSION:
+            proposal["supersedes_claim_id"] = payload["supersedes_claim_id"]
+            proposal["expected_claim_sha256"] = payload["expected_claim_sha256"]
         proposal_target = proposal_path(root, project, proposal_id)
         proposal_bytes = _json_bytes(proposal)
         validated_evidence: dict[str, dict] = {}
@@ -1658,6 +1826,7 @@ def load_governance(root: Path) -> tuple[dict[str, dict], dict[str, dict], dict[
     for proposal in proposals.values():
         if proposal.get("format_version") not in {
             PROPOSAL_V2_FORMAT_VERSION,
+            PROPOSAL_V3_FORMAT_VERSION,
             PROPOSAL_FORMAT_VERSION,
         }:
             continue
@@ -2048,7 +2217,7 @@ def _agent_memory_terminal_result(
         else:
             terminal_status = "accepted"
         autonomous_acceptance = (
-            event["action"] == "proposal_accepted"
+            event["action"] in {"proposal_accepted", "claim_superseded"}
             and event.get("actor") == "mcp:autonomous"
             and event.get("authority") == AGENT_MEMORY_AUTHORITY
             and claim["authority"] == AGENT_MEMORY_AUTHORITY
@@ -2056,12 +2225,36 @@ def _agent_memory_terminal_result(
             and claim.get("proposal_id") == proposal["proposal_id"]
         )
         if autonomous_acceptance and terminal_status == "accepted":
+            previous = claims.get(event.get("previous_claim_id") or "")
+            if event["action"] == "claim_superseded":
+                action = (
+                    "renewed"
+                    if previous is not None and previous["object"] == claim["object"]
+                    else "superseded"
+                )
+            else:
+                action = "remembered"
             return {
-                "action": "remembered",
+                "action": action,
                 "proposal_id": proposal["proposal_id"],
                 "claim_id": claim["claim_id"],
+                "previous_claim_id": event.get("previous_claim_id"),
                 "authority": claim["authority"],
                 "valid_to": claim.get("valid_to"),
+                "source_verification_status": (
+                    "verified_at_transition"
+                    if event["action"] == "claim_superseded"
+                    else "not_requested"
+                ),
+                "verified_source_refs": (
+                    [
+                        source_ref
+                        for source_ref in proposal.get("source_refs", [])
+                        if _repo_source_parts(source_ref) is not None
+                    ]
+                    if event["action"] == "claim_superseded"
+                    else []
+                ),
                 "candidate_activated": True,
                 "conflict_detected": False,
                 "terminal_status": terminal_status,
@@ -2111,6 +2304,20 @@ def _agent_memory_terminal_result(
     elif (
         autonomous_terminal
         and event["action"] == "proposal_deferred"
+        and event.get("reason_code") == "stale_cas_target"
+    ):
+        action = "stale_cas_deferred"
+        conflict = True
+    elif (
+        autonomous_terminal
+        and event["action"] == "proposal_deferred"
+        and event.get("reason_code") == "source_verification_failed"
+    ):
+        action = "source_verification_deferred"
+        conflict = False
+    elif (
+        autonomous_terminal
+        and event["action"] == "proposal_deferred"
         and event.get("reason_code") == "out_of_scope"
         and proposal["valid_from"] > moment
     ):
@@ -2150,7 +2357,56 @@ def _agent_memory_terminal_result(
         "existing_authority": selected["authority"] if selected else None,
         "terminal_status": TERMINAL_PROPOSAL_ACTIONS[event["action"]],
         "terminal_reason_code": event.get("reason_code"),
+        "source_verification_status": (
+            "failed"
+            if action == "source_verification_deferred"
+            else "not_completed" if action == "stale_cas_deferred" else "not_requested"
+        ),
         "activation_replay": True,
+    }
+
+
+def _defer_autonomous_proposal(
+    root: Path,
+    proposal: dict,
+    *,
+    reason_code: str,
+    action: str,
+    operation: str,
+    target_id: str | None = None,
+    existing_authority: str | None = None,
+    conflict_detected: bool = False,
+    source_verification_status: str = "not_requested",
+) -> dict:
+    transaction_id = new_id("transaction")
+    event, relative = _event_record(
+        action="proposal_deferred",
+        actor="mcp:autonomous",
+        transaction_id=transaction_id,
+        project=proposal["project"],
+        proposal_id=proposal["proposal_id"],
+        target_id=target_id,
+        reason_code=reason_code,
+    )
+    transaction = apply_transaction(
+        root,
+        transaction_id=transaction_id,
+        operation=operation,
+        actor="mcp:autonomous",
+        changes=[FileChange(root / relative, _json_bytes(event))],
+    )
+    return {
+        "action": action,
+        "proposal_id": proposal["proposal_id"],
+        "candidate_activated": False,
+        "conflict_detected": conflict_detected,
+        "existing_claim_id": target_id,
+        "existing_authority": existing_authority,
+        "terminal_status": "deferred",
+        "terminal_reason_code": reason_code,
+        "source_verification_status": source_verification_status,
+        "activation_replay": False,
+        **transaction,
     }
 
 
@@ -2159,6 +2415,7 @@ def activate_agent_memory(
     *,
     proposal_id: str,
     limits: AgentMemoryLimits,
+    source_roots: dict[str, Path],
     lock_timeout: float,
     recover_stale: bool,
 ) -> dict:
@@ -2239,6 +2496,133 @@ def activate_agent_memory(
                 "conflict_detected": False,
                 "terminal_status": "deferred",
                 "terminal_reason_code": "out_of_scope",
+                "activation_replay": False,
+                **transaction,
+            }
+
+        if proposal.get("format_version") == PROPOSAL_FORMAT_VERSION:
+            previous_id = proposal["supersedes_claim_id"]
+            previous = claims.get(previous_id)
+            current = _overlapping_current_claims(claims, proposal, at=moment)
+            stale = (
+                previous is None
+                or previous["status"] != "accepted"
+                or previous["authority"] != AGENT_MEMORY_AUTHORITY
+                or previous["valid_from"] > moment
+                or (previous.get("valid_to") is not None and previous["valid_to"] <= moment)
+                or previous["content_sha256"] != proposal["expected_claim_sha256"]
+                or previous["project"] != proposal["project"]
+                or (previous["subject"], previous["predicate"])
+                != (proposal["subject"], proposal["predicate"])
+                or proposal["valid_from"] <= previous["valid_from"]
+                or any(item["claim_id"] != previous_id for item in current)
+                or not any(item["claim_id"] == previous_id for item in current)
+            )
+            if stale:
+                return _defer_autonomous_proposal(
+                    root,
+                    proposal,
+                    reason_code="stale_cas_target",
+                    action="stale_cas_deferred",
+                    operation="agent-memory-cas-stale-defer",
+                    target_id=previous_id,
+                    existing_authority=previous["authority"] if previous is not None else None,
+                    conflict_detected=True,
+                    source_verification_status="not_completed",
+                )
+            assert previous is not None
+            try:
+                verified_sources = verify_cas_source_refs(
+                    proposal,
+                    previous,
+                    source_roots,
+                )
+            except GovernanceError:
+                return _defer_autonomous_proposal(
+                    root,
+                    proposal,
+                    reason_code="source_verification_failed",
+                    action="source_verification_deferred",
+                    operation="agent-memory-cas-source-defer",
+                    target_id=previous_id,
+                    existing_authority=previous["authority"],
+                    source_verification_status="failed",
+                )
+
+            now = utc_now()
+            claim_id = new_id("claim")
+            new_claim = {
+                "claim_id": claim_id,
+                "project": proposal["project"],
+                "subject": proposal["subject"],
+                "predicate": proposal["predicate"],
+                "object": proposal["object"],
+                "status": "accepted",
+                "authority": AGENT_MEMORY_AUTHORITY,
+                "valid_from": proposal["valid_from"],
+                "valid_to": proposal["valid_to"],
+                "recorded_at": now,
+                "transitioned_at": now,
+                "proposal_id": proposal["proposal_id"],
+                "supersedes": previous_id,
+                "superseded_by": None,
+                "evidence_ids": proposal.get("evidence_ids", []),
+                "source_refs": proposal.get("source_refs", []),
+                "sensitivity": proposal["sensitivity"],
+                "actor": actor,
+                "rationale": proposal.get("rationale")
+                or "Source-verified autonomous compare-and-swap replacement.",
+            }
+            old_updated = dict(previous)
+            old_updated.update({
+                "status": "superseded",
+                "valid_to": proposal["valid_from"],
+                "transitioned_at": now,
+                "superseded_by": claim_id,
+                "actor": actor,
+            })
+            old_target = root / previous["path"]
+            old_payload = render_claim(old_updated)
+            new_payload = render_claim(new_claim)
+            transaction_id = new_id("transaction")
+            event, relative = _event_record(
+                action="claim_superseded",
+                actor=actor,
+                transaction_id=transaction_id,
+                project=proposal["project"],
+                proposal_id=proposal["proposal_id"],
+                claim_id=claim_id,
+                previous_claim_id=previous_id,
+                authority=AGENT_MEMORY_AUTHORITY,
+                previous_sha256=previous["content_sha256"],
+                current_sha256=_hash_bytes(new_payload),
+            )
+            transaction = apply_transaction(
+                root,
+                transaction_id=transaction_id,
+                operation="agent-memory-cas-supersede",
+                actor=actor,
+                changes=[
+                    FileChange(old_target, old_payload),
+                    FileChange(claim_path(root, proposal["project"], claim_id), new_payload),
+                    FileChange(root / relative, _json_bytes(event)),
+                ],
+            )
+            return {
+                "action": (
+                    "renewed" if previous["object"] == new_claim["object"] else "superseded"
+                ),
+                "proposal_id": proposal["proposal_id"],
+                "claim_id": claim_id,
+                "previous_claim_id": previous_id,
+                "authority": AGENT_MEMORY_AUTHORITY,
+                "valid_to": new_claim["valid_to"],
+                "candidate_activated": True,
+                "conflict_detected": False,
+                "source_verification_status": "verified_at_transition",
+                "verified_source_refs": [
+                    item["source_ref"] for item in verified_sources
+                ],
                 "activation_replay": False,
                 **transaction,
             }
@@ -2395,6 +2779,7 @@ def remember_memory_bundle(
     proposal_limits: ProposalLimits,
     memory_limits: AgentMemoryLimits,
     lifecycle_policy: AgentMemoryLifecyclePolicy = AgentMemoryLifecyclePolicy(),
+    source_roots: dict[str, Path] | None = None,
     lock_timeout: float,
     recover_stale: bool,
 ) -> dict:
@@ -2409,6 +2794,9 @@ def remember_memory_bundle(
         raise GovernanceError(
             "autonomous memory accepts normal-sensitivity records only."
         )
+    configured_source_roots = source_roots or {}
+    if payload.get("supersedes_claim_id"):
+        verify_cas_source_refs(payload, None, configured_source_roots)
     submitted = submit_proposal_bundle(
         root,
         request=request,
@@ -2423,6 +2811,7 @@ def remember_memory_bundle(
         root,
         proposal_id=submitted["proposal_id"],
         limits=memory_limits,
+        source_roots=configured_source_roots,
         lock_timeout=lock_timeout,
         recover_stale=recover_stale,
     )
@@ -2720,6 +3109,7 @@ def delete_item(
         }
         if kind == "proposal" and record.get("format_version") in {
             PROPOSAL_V2_FORMAT_VERSION,
+            PROPOSAL_V3_FORMAT_VERSION,
             PROPOSAL_FORMAT_VERSION,
         }:
             tombstone["submission_replay_key"] = submission_replay_key(
@@ -2913,8 +3303,9 @@ def sync_governance_projection(con: sqlite3.Connection, root: Path) -> dict:
                 """INSERT INTO governance_proposals(
                        proposal_id,path,format_version,project,subject,predicate,object,status,proposed_at,valid_from,valid_to,
                        actor,requested_authority,sensitivity,evidence_ids_json,source_refs_json,
-                       submission_id,payload_digest,source_channel,content_hash
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       submission_id,payload_digest,source_channel,supersedes_claim_id,
+                       expected_claim_sha256,content_hash
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     proposal_id, record["path"], record["format_version"], record["project"], record["subject"], record["predicate"],
                     record["object"], statuses[proposal_id], record["proposed_at"], record["valid_from"], record.get("valid_to"),
@@ -2922,6 +3313,7 @@ def sync_governance_projection(con: sqlite3.Connection, root: Path) -> dict:
                     json.dumps(record.get("evidence_ids", []), ensure_ascii=False),
                     json.dumps(record.get("source_refs", []), ensure_ascii=False),
                     record.get("submission_id"), record.get("payload_digest"), record.get("source_channel"),
+                    record.get("supersedes_claim_id"), record.get("expected_claim_sha256"),
                     _hash_bytes((root / record["path"]).read_bytes()),
                 ),
             )

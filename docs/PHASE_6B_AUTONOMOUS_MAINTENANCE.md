@@ -1,8 +1,8 @@
 # Phase 6B — Autonomous memory maintenance
 
-Status: Phase 6B.1 implemented and locally validated; hosted validation pending
+Status: Phase 6B.1 and 6B.2 implemented and locally validated; hosted validation pending
 
-Date: 2026-08-27
+Date: 2026-08-28
 
 ## 1. Product decision
 
@@ -23,8 +23,8 @@ have different proofs and failure modes:
 3. **6B.3 — logical compaction:** bounded active-state consolidation while
    preserving canonical history and provenance.
 
-Only 6B.1 is in the current implementation gate. Later slices must not weaken
-its authority, replay, or history guarantees.
+Phases 6B.1 and 6B.2 are implemented. Phase 6B.3 must not weaken their
+authority, replay, source-containment, or history guarantees.
 
 ## 2. Phase 6B.1 surface
 
@@ -94,15 +94,79 @@ Acceptance requires:
 - rebuild, doctor, repeat sync, and SQLite integrity remain clean; and
 - the full deterministic benchmark and static evaluation suite still passes.
 
-## 6. Deferred Phase 6B.2 and 6B.3 gates
+## 6. Phase 6B.2 source-verified compare-and-swap
 
 Autonomous supersession is not safe merely because a candidate supplies a newer
-timestamp or a different hash. Phase 6B.2 requires an operator-configured source
-root/verifier, a current digest check performed by ELM, an expected-current
-claim ID and content hash, same-project/subject/predicate enforcement, a target
-whose authority is exactly `agent_curated`, and one atomic old/new/event
-transaction. Any stale precondition, stronger claim, unresolved conflict, or
-unverifiable source must defer.
+timestamp or a different hash. Phase 6B.2 therefore extends the existing
+`remember_memory` request instead of adding a ninth autonomous tool. A CAS
+request supplies both `supersedes_claim_id` and `expected_claim_sha256`; omitting
+both preserves proposal-v3 append behavior. Supplying only one fails before a
+canonical write.
+
+The operator configures zero or more named roots with
+`--source-root ALIAS=/absolute/repository/path`. CAS remains unavailable when no
+matching root is configured. A source reference has the form
+`repo://ALIAS/relative/path@sha256:DIGEST`. ELM resolves only plain relative
+paths under the named root, rejects traversal, URI credentials, queries,
+fragments, percent-encoded paths, and symlink components, reads the current file
+bytes, and compares their SHA-256 digest under the canonical writer lock. At
+least one verified locator must already be present on the target claim, so a CAS
+cannot switch to an unrelated evidence path while replacing memory.
+
+Under the writer lock, all of these conditions are mandatory:
+
+- target ID and canonical Markdown hash equal the digest-bound v4 preconditions;
+- the target is the sole current lineage head for the same
+  project/subject/predicate;
+- its status is `accepted` and its authority is exactly `agent_curated`;
+- no stronger, disputed, superseded, expired, or competing current claim is
+  eligible;
+- the successor begins after the target's `valid_from` and obeys the existing
+  lease limits; and
+- every configured `repo://` reference resolves within its root and matches the
+  current file bytes.
+
+Success performs one journaled old-claim/new-claim/event transaction. A changed
+object is reported as `superseded`; the same object is reported as `renewed`.
+Both create a successor claim and preserve the earlier claim as `superseded`;
+neither extends or reopens history in place. A stale target or race becomes a
+terminal deferred proposal, and concurrent CAS attempts against the same hash
+have exactly one winner. Replay returns the recorded transition without
+pretending the external source was rechecked.
+
+Source verification proves only that the configured file had the stated bytes
+at the transition check. It does not prove that an agent's subject, predicate,
+or object is a semantically correct interpretation of those bytes. The
+successor therefore remains `agent_curated`; this path cannot grant
+`verified_repository_state`, `user_ratified`, or another stronger authority.
+External repositories do not share ELM's lock, so later source drift is possible
+and is represented honestly by `verified_at_transition`, not a permanent
+freshness claim.
+
+Proposal-v3 remains readable for leased append operations. CAS uses proposal-v4,
+which digest-binds the effective `valid_to`, target claim ID, expected canonical
+claim hash, source references, and the rest of the normalized payload. Derived
+SQLite schema v5 projects the two CAS preconditions and remains fully
+rebuildable from canonical files.
+
+## 7. Phase 6B.2 acceptance contract
+
+Acceptance requires:
+
+- the exact 7/10/8 MCP tool surfaces remain unchanged;
+- proposal-v2/v3 compatibility and proposal-v4 digest/replay verification;
+- successful source-backed replacement and same-value lease renewal;
+- stale target/hash, stronger authority, conflicting head, missing root,
+  digest mismatch, traversal, and partial CAS input fail closed;
+- source mismatch detected before submission leaves no canonical candidate;
+- a post-submission verification race defers rather than mutating a stale claim;
+- concurrent CAS produces one successor and no active contradiction;
+- the old claim, new claim, proposal, and event survive rebuild and history;
+- schema v0-v4 migrations reach v5 without losing projected rows; and
+- full tests, benchmark gates, doctor, repeat sync, and SQLite integrity remain
+  clean.
+
+## 8. Deferred Phase 6B.3 gate
 
 Compaction in Phase 6B.3 is logical rather than destructive by default. It may
 reduce active retrieval state or produce a bounded derived snapshot, but it must

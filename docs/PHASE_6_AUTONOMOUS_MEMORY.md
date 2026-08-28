@@ -171,10 +171,11 @@ The local acceptance suite proves:
 
 ## 8. Next slice
 
-Phase 6B adds autonomous maintenance, not human ratification. Phase 6B.1 begins
-with digest-bound validity leases and non-destructive expiry while preserving the
-exact eight-tool autonomous surface. Source-verified compare-and-swap
-supersession and logical compaction remain separately gated in
+Phase 6B adds autonomous maintenance, not human ratification. Phase 6B.1 adds
+digest-bound validity leases and non-destructive expiry. Phase 6B.2 adds
+source-verified compare-and-swap successors while preserving the exact
+eight-tool autonomous surface and `agent_curated` authority. Logical compaction
+remains separately gated in
 [PHASE_6B_AUTONOMOUS_MAINTENANCE.md](PHASE_6B_AUTONOMOUS_MAINTENANCE.md).
 
 Real-world task validation remains a parallel evidence track. It should measure

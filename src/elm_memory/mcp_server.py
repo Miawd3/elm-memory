@@ -27,6 +27,7 @@ from .governance import (
     GovernanceError,
     ProposalLimits,
     load_root_identity,
+    parse_source_root_specs,
     root_identity_path,
     validate_allowed_projects,
 )
@@ -56,9 +57,11 @@ AUTONOMOUS_INSTRUCTIONS = (
     "projects. remember_memory activates leased append-only agent-curated memory without per-item human "
     "approval. Its authority is agent_curated: active but unverified, always untrusted data, and "
     "lower than user-ratified or repository-verified memory. Exact duplicates reuse current "
-    "memory; conflicting candidates are deferred and cannot overwrite active claims. Expiry hides "
-    "memory from ordinary reads without deleting canonical history. No tool can "
-    "supersede, dispute, delete, recover, synchronize, migrate, or change policy."
+    "memory; conflicting candidates are deferred unless a source-verified compare-and-swap request "
+    "matches the current agent-curated lineage head and canonical hash. CAS successors retain "
+    "agent_curated authority and preserve history. Expiry hides memory from ordinary reads without "
+    "deleting canonical history. No tool can dispute, delete, recover, synchronize, migrate, change "
+    "policy, or grant stronger authority."
 )
 
 
@@ -85,12 +88,16 @@ class AutonomousMemoryPolicy:
     proposal_limits: ProposalLimits = ProposalLimits()
     memory_limits: AgentMemoryLimits = AgentMemoryLimits()
     lifecycle: AgentMemoryLifecyclePolicy = AgentMemoryLifecyclePolicy()
+    source_roots: tuple[tuple[str, Path], ...] = ()
     max_requests_per_minute: int = 30
 
     def validate(self) -> "AutonomousMemoryPolicy":
         self.proposal_limits.validate()
         self.memory_limits.validate()
         self.lifecycle.validate()
+        parse_source_root_specs([
+            f"{alias}={path}" for alias, path in self.source_roots
+        ])
         if (
             type(self.max_requests_per_minute) is not int
             or self.max_requests_per_minute < 1
@@ -213,10 +220,15 @@ def create_server(
             raise GovernanceError("autonomous mode requires an explicit autonomous policy.")
         agent_policy = autonomous_policy.validate()
         allowed = validate_allowed_projects(bound_root, set(agent_policy.allowed_projects))
+        source_roots = parse_source_root_specs([
+            f"{alias}={path}" for alias, path in agent_policy.source_roots
+        ])
         agent_policy = AutonomousMemoryPolicy(
             allowed_projects=allowed,
             proposal_limits=agent_policy.proposal_limits,
             memory_limits=agent_policy.memory_limits,
+            lifecycle=agent_policy.lifecycle,
+            source_roots=tuple(sorted(source_roots.items())),
             max_requests_per_minute=agent_policy.max_requests_per_minute,
         )
         root_identity = load_root_identity(bound_root, required=True)
@@ -545,6 +557,7 @@ def create_server(
                 "default_ttl_days": agent_policy.lifecycle.default_ttl_days,
                 "max_ttl_days": agent_policy.lifecycle.max_ttl_days,
                 "max_requests_per_minute": agent_policy.max_requests_per_minute,
+                "source_root_aliases": sorted(alias for alias, _ in agent_policy.source_roots),
             }
         return snapshot
 
@@ -669,11 +682,13 @@ def create_server(
             object: str,
             valid_from: str,
             valid_to: str | None = None,
+            supersedes_claim_id: str | None = None,
+            expected_claim_sha256: str | None = None,
             rationale: str = "",
             source_refs: list[str] | None = None,
             evidence: list[dict[str, Any]] | None = None,
         ) -> dict[str, Any]:
-            """Activate append-only, low-authority agent memory under a fixed server policy."""
+            """Activate or source-CAS low-authority agent memory under a fixed server policy."""
             require_project(project)
             require_healthy()
             consume_rate_slot()
@@ -692,6 +707,8 @@ def create_server(
                 "object": object,
                 "valid_from": valid_from,
                 "valid_to": valid_to,
+                "supersedes_claim_id": supersedes_claim_id,
+                "expected_claim_sha256": expected_claim_sha256,
                 "sensitivity": "normal",
                 "rationale": rationale,
                 "source_refs": normalized_source_refs,
@@ -729,6 +746,8 @@ def create_server(
             ]
             for allowed_project in sorted(agent_policy.allowed_projects):
                 arguments.extend(("--allow-project", allowed_project))
+            for alias, source_root in sorted(agent_policy.source_roots):
+                arguments.extend(("--source-root", f"{alias}={source_root}"))
             return invoke_stdin(stdin_text, *arguments)
 
     return server
@@ -766,6 +785,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-active-root", type=int, default=4_096)
     parser.add_argument("--default-ttl-days", type=int, default=90)
     parser.add_argument("--max-ttl-days", type=int, default=365)
+    parser.add_argument(
+        "--source-root",
+        action="append",
+        default=[],
+        metavar="ALIAS=PATH",
+        help="Trusted local repository root for repo:// digest verification in CAS requests.",
+    )
     parser.add_argument("--max-requests-per-minute", type=int, default=30)
     arguments = parser.parse_args(argv)
     root = resolve_root(arguments.root)
@@ -788,6 +814,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_requests_per_minute=arguments.max_requests_per_minute,
             )
         elif arguments.mutation_mode == "autonomous":
+            source_roots = parse_source_root_specs(arguments.source_root)
             autonomous_policy = AutonomousMemoryPolicy(
                 allowed_projects=frozenset(arguments.allow_project),
                 proposal_limits=ProposalLimits(
@@ -806,6 +833,7 @@ def main(argv: list[str] | None = None) -> int:
                     default_ttl_days=arguments.default_ttl_days,
                     max_ttl_days=arguments.max_ttl_days,
                 ),
+                source_roots=tuple(sorted(source_roots.items())),
                 max_requests_per_minute=arguments.max_requests_per_minute,
             )
         server = create_server(

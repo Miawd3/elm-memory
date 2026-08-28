@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 from pathlib import Path
 import unittest
@@ -17,6 +18,7 @@ except ModuleNotFoundError:  # The MCP adapter is an optional installation extra
 from elm_memory.governance import (
     AgentMemoryLifecyclePolicy,
     AgentMemoryLimits,
+    GovernanceError,
     ProposalLimits,
     parse_claim,
     remember_memory_bundle,
@@ -80,6 +82,8 @@ def autonomous_server(
     root: Path,
     *,
     memory_limits: AgentMemoryLimits = AgentMemoryLimits(),
+    lifecycle: AgentMemoryLifecyclePolicy = AgentMemoryLifecyclePolicy(),
+    source_roots: tuple[tuple[str, Path], ...] = (),
     max_requests_per_minute: int = 30,
 ):
     return create_server(
@@ -89,6 +93,8 @@ def autonomous_server(
             allowed_projects=frozenset({"orion"}),
             proposal_limits=ProposalLimits(),
             memory_limits=memory_limits,
+            lifecycle=lifecycle,
+            source_roots=source_roots,
             max_requests_per_minute=max_requests_per_minute,
         ),
     )
@@ -860,9 +866,388 @@ class AutonomousMemoryCLITests(unittest.TestCase):
         self.assertEqual(0, ordinary["count"])
         self.assertEqual(2, len(history["claims"]))
 
+    def test_source_verified_cas_supersedes_and_replays_atomically(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            source_root = root.parent / "repository"
+            source_root.mkdir()
+            source = source_root / "runtime.txt"
+            source.write_bytes(b"runtime=postgres-18\n")
+            first_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            first_request = request()
+            first_request["source_refs"] = [
+                f"repo://workspace/runtime.txt@sha256:{first_digest}"
+            ]
+            first = json.loads(remember_cli(root, first_request).stdout)
+            first_history = run_cli(root, "history", "--project", "orion", "--no-sync")
+            previous = first_history["claims"][0]
+
+            source.write_bytes(b"runtime=postgres-19\n")
+            second_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            replacement = request(
+                submission_id="submission_22222222-2222-4222-8222-222222222222",
+                object_value="PostgreSQL 19",
+                valid_from="2026-08-27T12:00:00Z",
+            )
+            replacement.update({
+                "source_refs": [f"repo://workspace/runtime.txt@sha256:{second_digest}"],
+                "supersedes_claim_id": previous["claim_id"],
+                "expected_claim_sha256": previous["content_sha256"],
+            })
+            source_spec = f"workspace={source_root}"
+            changed = json.loads(remember_cli(
+                root,
+                replacement,
+                "--source-root",
+                source_spec,
+            ).stdout)
+            rebuilt = run_cli(root, "rebuild")
+            doctor = run_cli(root, "doctor", "--no-sync")
+            replay = json.loads(remember_cli(
+                root,
+                replacement,
+                "--source-root",
+                source_spec,
+            ).stdout)
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+            cas_proposal = next(
+                item for item in history["proposals"] if item["format_version"] == 4
+            )
+            proposal_path = root / cas_proposal["path"]
+            raw_proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+            raw_proposal["expected_claim_sha256"] = "0" * 64
+            proposal_path.write_text(
+                json.dumps(
+                    raw_proposal,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ) + "\n",
+                encoding="utf-8",
+            )
+            tampered = run_cli_process(
+                root,
+                "history",
+                "--project",
+                "orion",
+                "--no-sync",
+            )
+
+        self.assertTrue(first["candidate_activated"])
+        self.assertEqual("superseded", changed["action"])
+        self.assertEqual(previous["claim_id"], changed["previous_claim_id"])
+        self.assertEqual("verified_at_transition", changed["source_verification_status"])
+        self.assertEqual("superseded", replay["action"])
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual("verified_at_transition", replay["source_verification_status"])
+        self.assertEqual(changed["verified_source_refs"], replay["verified_source_refs"])
+        self.assertEqual([], rebuilt["errors"])
+        self.assertEqual(0, doctor["issue_count"])
+        self.assertEqual(1, sum(item["status"] == "accepted" for item in history["claims"]))
+        self.assertEqual(1, sum(item["status"] == "superseded" for item in history["claims"]))
+        current = next(item for item in history["claims"] if item["status"] == "accepted")
+        self.assertEqual("PostgreSQL 19", current["object"])
+        self.assertEqual("agent_curated", current["authority"])
+        self.assertEqual(2, tampered.returncode)
+        self.assertIn("Proposal-v4 payload digest mismatch", tampered.stderr)
+
+    def test_cas_source_mismatch_fails_before_canonical_mutation(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            source_root = root.parent / "repository"
+            source_root.mkdir()
+            source = source_root / "runtime.txt"
+            source.write_bytes(b"runtime=postgres-18\n")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            first_request = request()
+            first_request["source_refs"] = [f"repo://workspace/runtime.txt@sha256:{digest}"]
+            first = json.loads(remember_cli(root, first_request).stdout)
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+            replacement = request(
+                submission_id="submission_22222222-2222-4222-8222-222222222222",
+                object_value="PostgreSQL 19",
+                valid_from="2026-08-27T12:00:00Z",
+            )
+            replacement.update({
+                "source_refs": [f"repo://workspace/runtime.txt@sha256:{'0' * 64}"],
+                "supersedes_claim_id": first["claim_id"],
+                "expected_claim_sha256": history["claims"][0]["content_sha256"],
+            })
+            refused = remember_cli(
+                root,
+                replacement,
+                "--source-root",
+                f"workspace={source_root}",
+            )
+            final_history = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+        self.assertEqual(2, refused.returncode)
+        self.assertIn("source digest does not match", refused.stderr)
+        self.assertEqual(1, len(final_history["proposals"]))
+        self.assertEqual(1, len(final_history["claims"]))
+
+    def test_cas_source_drift_after_submission_defers_without_claim_mutation(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            source_root = root.parent / "repository"
+            source_root.mkdir()
+            source = source_root / "runtime.txt"
+            source.write_bytes(b"runtime=postgres-18\n")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            first_request = request()
+            first_request["source_refs"] = [f"repo://workspace/runtime.txt@sha256:{digest}"]
+            first = json.loads(remember_cli(root, first_request).stdout)
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+            replacement = request(
+                submission_id="submission_22222222-2222-4222-8222-222222222222",
+                object_value="PostgreSQL 19",
+                valid_from="2026-08-27T12:00:00Z",
+            )
+            replacement.update({
+                "source_refs": [f"repo://workspace/runtime.txt@sha256:{digest}"],
+                "supersedes_claim_id": first["claim_id"],
+                "expected_claim_sha256": history["claims"][0]["content_sha256"],
+            })
+            with patch(
+                "elm_memory.governance.verify_cas_source_refs",
+                side_effect=[[], GovernanceError("simulated source drift")],
+            ):
+                deferred = remember_memory_bundle(
+                    root,
+                    request=replacement,
+                    request_bytes=len(json.dumps(replacement).encode("utf-8")),
+                    allowed_projects={"orion"},
+                    proposal_limits=ProposalLimits(),
+                    memory_limits=AgentMemoryLimits(),
+                    source_roots={"workspace": source_root},
+                    lock_timeout=10.0,
+                    recover_stale=False,
+                )
+            final_history = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+        self.assertEqual("source_verification_deferred", deferred["action"])
+        self.assertEqual("failed", deferred["source_verification_status"])
+        self.assertEqual(1, len(final_history["claims"]))
+        self.assertEqual(2, len(final_history["proposals"]))
+        self.assertEqual(
+            "deferred",
+            next(item for item in final_history["proposals"] if item["format_version"] == 4)["status"],
+        )
+
+    def test_concurrent_cas_has_one_winner_and_one_stale_defer(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            source_root = root.parent / "repository"
+            source_root.mkdir()
+            source = source_root / "runtime.txt"
+            source.write_bytes(b"runtime=postgres-18\n")
+            first_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            first_request = request()
+            first_request["source_refs"] = [
+                f"repo://workspace/runtime.txt@sha256:{first_digest}"
+            ]
+            first = json.loads(remember_cli(root, first_request).stdout)
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+            expected_hash = history["claims"][0]["content_sha256"]
+
+            source.write_bytes(b"runtime=postgres-19\n")
+            changed_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            source_ref = f"repo://workspace/runtime.txt@sha256:{changed_digest}"
+
+            def replace(submission_id: str, object_value: str):
+                value = request(
+                    submission_id=submission_id,
+                    object_value=object_value,
+                    valid_from="2026-08-27T12:00:00Z",
+                )
+                value.update({
+                    "source_refs": [source_ref],
+                    "supersedes_claim_id": first["claim_id"],
+                    "expected_claim_sha256": expected_hash,
+                })
+                process = remember_cli(
+                    root,
+                    value,
+                    "--source-root",
+                    f"workspace={source_root}",
+                )
+                process.check_returncode()
+                return json.loads(process.stdout)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(
+                    lambda item: replace(*item),
+                    (
+                        ("submission_22222222-2222-4222-8222-222222222222", "PostgreSQL 19"),
+                        ("submission_33333333-3333-4333-8333-333333333333", "PostgreSQL 20"),
+                    ),
+                ))
+            final_history = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+        self.assertEqual({"superseded", "stale_cas_deferred"}, {item["action"] for item in results})
+        self.assertEqual(1, sum(item["status"] == "accepted" for item in final_history["claims"]))
+        self.assertEqual(2, len(final_history["claims"]))
+        self.assertEqual(0, len(final_history["contradictions"]))
+
+    def test_source_verified_cas_renews_same_value_without_reopening_history(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            source_root = root.parent / "repository"
+            source_root.mkdir()
+            source = source_root / "runtime.txt"
+            source.write_bytes(b"runtime=postgres-18\n")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            source_ref = f"repo://workspace/runtime.txt@sha256:{digest}"
+            first_request = request()
+            first_request["source_refs"] = [source_ref]
+            first = json.loads(remember_cli(root, first_request).stdout)
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+            renewal = request(
+                submission_id="submission_22222222-2222-4222-8222-222222222222",
+                valid_from="2026-08-27T12:00:00Z",
+                valid_to="2026-11-27T12:00:00Z",
+            )
+            renewal.update({
+                "source_refs": [source_ref],
+                "supersedes_claim_id": first["claim_id"],
+                "expected_claim_sha256": history["claims"][0]["content_sha256"],
+            })
+            renewed = json.loads(remember_cli(
+                root,
+                renewal,
+                "--source-root",
+                f"workspace={source_root}",
+            ).stdout)
+            final_history = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+        self.assertEqual("renewed", renewed["action"])
+        self.assertNotEqual(first["claim_id"], renewed["claim_id"])
+        self.assertEqual("verified_at_transition", renewed["source_verification_status"])
+        self.assertEqual(2, len(final_history["claims"]))
+        self.assertEqual(
+            {"accepted", "superseded"},
+            {item["status"] for item in final_history["claims"]},
+        )
+
+    def test_cas_cannot_replace_stronger_authority(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            source_root = root.parent / "repository"
+            source_root.mkdir()
+            source = source_root / "runtime.txt"
+            source.write_bytes(b"runtime=postgres-18\n")
+            first_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            initial = request()
+            initial["source_refs"] = [
+                f"repo://workspace/runtime.txt@sha256:{first_digest}"
+            ]
+            proposed = json.loads(run_cli_stdin(
+                root,
+                json.dumps(initial),
+                "proposal-submit",
+                "--request-stdin",
+                "--allow-project",
+                "orion",
+            ).stdout)
+            accepted = run_cli(
+                root,
+                "accept",
+                proposed["proposal_id"],
+                "--actor",
+                "human:test",
+                "--authority",
+                "verified_repository_state",
+            )
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+            source.write_bytes(b"runtime=postgres-19\n")
+            changed_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            replacement = request(
+                submission_id="submission_22222222-2222-4222-8222-222222222222",
+                object_value="PostgreSQL 19",
+                valid_from="2026-08-27T12:00:00Z",
+            )
+            replacement.update({
+                "source_refs": [f"repo://workspace/runtime.txt@sha256:{changed_digest}"],
+                "supersedes_claim_id": accepted["claim_id"],
+                "expected_claim_sha256": history["claims"][0]["content_sha256"],
+            })
+            refused = json.loads(remember_cli(
+                root,
+                replacement,
+                "--source-root",
+                f"workspace={source_root}",
+            ).stdout)
+            final_history = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+        self.assertEqual("stale_cas_deferred", refused["action"])
+        self.assertFalse(refused["candidate_activated"])
+        current = next(item for item in final_history["claims"] if item["status"] == "accepted")
+        self.assertEqual("verified_repository_state", current["authority"])
+        self.assertEqual("PostgreSQL 18", current["object"])
+
+    def test_cas_rejects_repo_path_traversal_before_canonical_mutation(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            source_root = root.parent / "repository"
+            source_root.mkdir()
+            outside = root.parent / "outside.txt"
+            outside.write_bytes(b"outside\n")
+            digest = hashlib.sha256(outside.read_bytes()).hexdigest()
+            value = request()
+            value.update({
+                "source_refs": [f"repo://workspace/../outside.txt@sha256:{digest}"],
+                "supersedes_claim_id": "claim_11111111-1111-4111-8111-111111111111",
+                "expected_claim_sha256": "0" * 64,
+            })
+            refused = remember_cli(
+                root,
+                value,
+                "--source-root",
+                f"workspace={source_root}",
+            )
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+        self.assertEqual(2, refused.returncode)
+        self.assertIn("traverses directories", refused.stderr)
+        self.assertEqual([], history["proposals"])
+        self.assertEqual([], history["claims"])
+
+    def test_partial_cas_preconditions_fail_before_canonical_mutation(self) -> None:
+        cases = (
+            {"supersedes_claim_id": "claim_11111111-1111-4111-8111-111111111111"},
+            {"expected_claim_sha256": "0" * 64},
+        )
+        for extra in cases:
+            with self.subTest(fields=sorted(extra)), FixtureCopy() as root:
+                initialize(root)
+                refused = remember_cli(root, {**request(), **extra})
+                history = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+            self.assertEqual(2, refused.returncode)
+            self.assertIn("must be supplied together", refused.stderr)
+            self.assertEqual([], history["proposals"])
+            self.assertEqual([], history["claims"])
+
 
 @unittest.skipUnless(Client is not None, "install elm-memory[mcp] to run MCP tests")
 class AutonomousMemoryMCPTests(unittest.TestCase):
+    def test_server_preserves_configured_lifecycle_limits(self) -> None:
+        async def run(root: Path):
+            lifecycle = AgentMemoryLifecyclePolicy(default_ttl_days=7, max_ttl_days=14)
+            async with Client(
+                autonomous_server(root, lifecycle=lifecycle),
+                raise_exceptions=True,
+            ) as client:
+                return await client.call_tool("status", {})
+
+        with FixtureCopy() as root:
+            initialize(root)
+            status = asyncio.run(run(root))
+
+        self.assertFalse(status.is_error)
+        self.assertEqual(7, status.structured_content["agent_memory_limits"]["default_ttl_days"])
+        self.assertEqual(14, status.structured_content["agent_memory_limits"]["max_ttl_days"])
+
     def test_exact_eight_tool_surface_remembers_without_human_gate(self) -> None:
         async def run(root: Path):
             async with Client(autonomous_server(root), raise_exceptions=True) as client:
@@ -913,6 +1298,74 @@ class AutonomousMemoryMCPTests(unittest.TestCase):
         self.assertEqual(90, status.structured_content["agent_memory_limits"]["default_ttl_days"])
         self.assertEqual(365, status.structured_content["agent_memory_limits"]["max_ttl_days"])
         self.assertTrue(denied.is_error)
+
+    def test_remember_memory_forwards_source_verified_cas_without_new_tool(self) -> None:
+        async def run(root: Path, source_root: Path, first_ref: str):
+            async with Client(
+                autonomous_server(
+                    root,
+                    source_roots=(("workspace", source_root),),
+                ),
+                raise_exceptions=True,
+            ) as client:
+                tools = await client.list_tools()
+                first = await client.call_tool("remember_memory", {
+                    "submission_id": "submission_44444444-4444-4444-8444-444444444444",
+                    "project": "orion",
+                    "subject": "Aurora",
+                    "predicate": "uses",
+                    "object": "PostgreSQL 18",
+                    "valid_from": "2026-08-27T00:00:00Z",
+                    "source_refs": [first_ref],
+                    "evidence": [],
+                })
+                history = await client.call_tool("history", {"project": "orion"})
+                previous = history.structured_content["claims"][0]
+                source = source_root / "runtime.txt"
+                source.write_bytes(b"runtime=postgres-19\n")
+                changed_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+                changed = await client.call_tool("remember_memory", {
+                    "submission_id": "submission_55555555-5555-4555-8555-555555555555",
+                    "project": "orion",
+                    "subject": "Aurora",
+                    "predicate": "uses",
+                    "object": "PostgreSQL 19",
+                    "valid_from": "2026-08-27T12:00:00Z",
+                    "supersedes_claim_id": previous["claim_id"],
+                    "expected_claim_sha256": previous["content_sha256"],
+                    "source_refs": [
+                        f"repo://workspace/runtime.txt@sha256:{changed_digest}"
+                    ],
+                    "evidence": [],
+                })
+                status = await client.call_tool("status", {})
+                return tools, first, changed, status
+
+        with FixtureCopy() as root:
+            initialize(root)
+            source_root = root.parent / "repository"
+            source_root.mkdir()
+            source = source_root / "runtime.txt"
+            source.write_bytes(b"runtime=postgres-18\n")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            tools, first, changed, status = asyncio.run(run(
+                root,
+                source_root,
+                f"repo://workspace/runtime.txt@sha256:{digest}",
+            ))
+
+        self.assertEqual(AUTONOMOUS_TOOLS, {tool.name for tool in tools.tools})
+        self.assertFalse(first.is_error)
+        self.assertFalse(changed.is_error)
+        self.assertEqual("superseded", changed.structured_content["action"])
+        self.assertEqual(
+            "verified_at_transition",
+            changed.structured_content["source_verification_status"],
+        )
+        self.assertEqual(
+            ["workspace"],
+            status.structured_content["agent_memory_limits"]["source_root_aliases"],
+        )
 
     def test_mutation_profile_reads_fail_closed_until_projection_is_repaired(self) -> None:
         async def run(root: Path):
