@@ -41,6 +41,8 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
 
         self.assertIn("project='lighthouse'", prompt)
         self.assertNotIn("project='orion'", prompt)
+        self.assertIn("ELM read tool with the selected section_key", prompt)
+        self.assertIn("Do not use built-in file or shell tools", prompt)
 
     def test_case_project_rejects_prompt_shaped_slugs(self) -> None:
         case = dict(PILOT.load_cases()[0], project="orion' inject=true")
@@ -266,6 +268,113 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
         self.assertTrue(PILOT.tool_audit_passes("no_memory", agy_audit))
         self.assertFalse(PILOT.tool_audit_passes("no_memory", claude_audit))
 
+    def test_antigravity_text_only_run_does_not_expose_a_workspace(self) -> None:
+        captured = {}
+        original_which = PILOT.shutil.which
+        original_run_process = PILOT.run_process
+
+        def fake_run_process(command, **kwargs):
+            captured["command"] = command
+            return PILOT.subprocess.CompletedProcess(
+                args=command,
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "event": "result",
+                        "result": {
+                            "structured_output": {
+                                "answer": PILOT.INSUFFICIENT,
+                                "source_path": None,
+                                "section_key": None,
+                                "evidence_status": "insufficient",
+                            },
+                            "usage": {
+                                "input_tokens": 10,
+                                "output_tokens": 2,
+                                "total_tokens": 12,
+                            },
+                        },
+                    }
+                ),
+                stderr="",
+            )
+
+        try:
+            PILOT.shutil.which = lambda name: "agy" if name == "agy" else None
+            PILOT.run_process = fake_run_process
+            with PILOT.disposable_directory("elm-antigravity-command-test-") as workspace:
+                status, _, _, _, _ = PILOT.run_antigravity(
+                    route="gemini-antigravity",
+                    workspace=workspace,
+                    root=workspace,
+                    runtime=workspace,
+                    prompt="prompt",
+                    condition="no_memory",
+                    model="gemini-test",
+                    timeout=5.0,
+                )
+        finally:
+            PILOT.shutil.which = original_which
+            PILOT.run_process = original_run_process
+
+        self.assertEqual("completed", status)
+        self.assertNotIn("--add-dir", captured["command"])
+
+    def test_antigravity_direct_mcp_mode_adds_only_the_isolated_workspace(self) -> None:
+        captured = {}
+        original_which = PILOT.shutil.which
+        original_run_process = PILOT.run_process
+
+        def fake_run_process(command, **kwargs):
+            captured["command"] = command
+            return PILOT.subprocess.CompletedProcess(
+                args=command,
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "event": "result",
+                        "result": {
+                            "structured_output": {
+                                "answer": PILOT.INSUFFICIENT,
+                                "source_path": None,
+                                "section_key": None,
+                                "evidence_status": "insufficient",
+                            },
+                            "usage": {
+                                "input_tokens": 10,
+                                "output_tokens": 2,
+                                "total_tokens": 12,
+                            },
+                        },
+                    }
+                ),
+                stderr="",
+            )
+
+        try:
+            PILOT.shutil.which = lambda name: "agy" if name == "agy" else None
+            PILOT.run_process = fake_run_process
+            with PILOT.disposable_directory("elm-antigravity-direct-test-") as workspace:
+                status, _, _, _, _ = PILOT.run_antigravity(
+                    route="gemini-antigravity",
+                    workspace=workspace,
+                    root=workspace,
+                    runtime=workspace,
+                    prompt="prompt",
+                    condition="elm",
+                    model="gemini-test",
+                    timeout=5.0,
+                    adapter_mode="direct-mcp",
+                )
+                self.assertTrue((workspace / ".agents" / "mcp_config.json").is_file())
+        finally:
+            PILOT.shutil.which = original_which
+            PILOT.run_process = original_run_process
+
+        self.assertEqual("completed", status)
+        add_dir_index = captured["command"].index("--add-dir") + 1
+        self.assertEqual(str(workspace), captured["command"][add_dir_index])
+
     def test_usage_requires_exact_integers_and_route_complete_counters(self) -> None:
         usage = PILOT.sanitized_usage(
             "provider",
@@ -342,6 +451,216 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
         self.assertTrue(PILOT.tool_audit_passes("elm", audit))
         self.assertEqual(1, audit["broker_internal_read_count"])
         self.assertEqual([], audit["unapproved_tool_names"])
+
+    def test_host_brokered_context_has_separate_closed_provenance(self) -> None:
+        case = PILOT.load_cases()[0]
+        with PILOT.disposable_directory("elm-host-broker-test-") as scratch:
+            root = scratch / "memory"
+            PILOT.prepare_root(root)
+            prompt, broker, elapsed = PILOT.prepare_evidence_prompt(
+                route="gemini-antigravity",
+                root=root,
+                case=case,
+                condition="elm",
+                corpus=PILOT.active_corpus(root),
+                antigravity_adapter="host-brokered-context",
+            )
+
+        self.assertIn("ELM CONTEXT PACKET", prompt)
+        self.assertTrue(
+            PILOT.broker_audit_passes(
+                "elm",
+                "host-brokered-context",
+                broker,
+                prompt=prompt,
+                case=case,
+            )
+        )
+        self.assertGreaterEqual(elapsed, 0)
+        self.assertNotIn(case["question"], json.dumps(broker))
+        self.assertNotIn(str(root), json.dumps(broker))
+
+        provider_audit = PILOT.empty_tool_audit("reported")
+        self.assertTrue(
+            PILOT.tool_audit_passes(
+                "elm", provider_audit, "host-brokered-context"
+            )
+        )
+        provider_audit["tool_call_count"] = 1
+        provider_audit["non_mcp_tool_call_count"] = 1
+        provider_audit["unapproved_tool_names"] = ["view_file"]
+        self.assertFalse(
+            PILOT.tool_audit_passes(
+                "elm", provider_audit, "host-brokered-context"
+            )
+        )
+
+        tampered = prompt.replace(case["expected_answer"], "tampered", 1)
+        self.assertFalse(
+            PILOT.broker_audit_passes(
+                "elm",
+                "host-brokered-context",
+                broker,
+                prompt=tampered,
+                case=case,
+            )
+        )
+
+    def test_host_brokered_prompt_is_attributed_and_tool_free(self) -> None:
+        case = PILOT.load_cases()[0]
+        prompt = PILOT.build_prompt(
+            case,
+            "elm",
+            "",
+            elm_context_packet="ELM CONTEXT PACKET\nsource: elm://section/section_123",
+        )
+
+        self.assertIn("trusted benchmark harness", prompt)
+        self.assertIn("Do not call tools", prompt)
+        self.assertIn("evidence_status='provided'", prompt)
+        self.assertIn("<ELM_CONTEXT_PACKET>", prompt)
+        self.assertIn("</ELM_CONTEXT_PACKET>", prompt)
+
+    def test_host_broker_rejects_unsafe_or_archived_source_locators(self) -> None:
+        base = {
+            "section_key": "section_11111111-1111-4111-8111-111111111111",
+            "locator": "elm://section/section_11111111-1111-4111-8111-111111111111",
+            "included_exact": True,
+        }
+        self.assertTrue(
+            PILOT._safe_context_source(
+                {**base, "path": "20_projects/orion/DECISIONS.md"}
+            )
+        )
+        for path in ("../private.md", "99_archive/legacy.md", "backups/copy.md"):
+            with self.subTest(path=path):
+                self.assertFalse(PILOT._safe_context_source({**base, "path": path}))
+
+    def test_pilot_accepts_only_dual_attested_host_brokered_run(self) -> None:
+        case = PILOT.load_cases()[0]
+        original_which = PILOT.shutil.which
+        original_models = PILOT.antigravity_models
+        original_version = PILOT.command_version
+        original_run = PILOT.run_antigravity
+
+        def fake_run_antigravity(**kwargs):
+            match = PILOT.re.search(
+                r"source: elm://section/(section_[0-9a-f-]+)\n"
+                + r"path: "
+                + PILOT.re.escape(case["expected_source_path"]),
+                kwargs["prompt"],
+            )
+            self.assertIsNotNone(match)
+            self.assertEqual("host-brokered-context", kwargs["adapter_mode"])
+            return (
+                "completed",
+                {
+                    "answer": case["expected_answer"],
+                    "source_path": case["expected_source_path"],
+                    "section_key": match.group(1),
+                    "evidence_status": "provided",
+                },
+                PILOT.sanitized_usage(
+                    "google-gemini-antigravity",
+                    {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110},
+                ),
+                PILOT.empty_tool_audit("reported"),
+                5.0,
+            )
+
+        try:
+            PILOT.shutil.which = lambda name: "agy" if name == "agy" else None
+            PILOT.antigravity_models = lambda _: self.fail(
+                "explicit model unexpectedly triggered discovery"
+            )
+            PILOT.command_version = lambda _: "Antigravity CLI 1.1.22"
+            PILOT.run_antigravity = fake_run_antigravity
+            result = PILOT.run_pilot(
+                PILOT.argparse.Namespace(
+                    routes=("gemini-antigravity",),
+                    conditions=("elm",),
+                    case_ids=(case["id"],),
+                    openai_model=None,
+                    gemini_model="gemini-test",
+                    antigravity_claude_model=None,
+                    claude_code_model=None,
+                    antigravity_adapter="host-brokered-context",
+                    timeout=5.0,
+                    max_cost_usd=1.0,
+                )
+            )
+        finally:
+            PILOT.shutil.which = original_which
+            PILOT.antigravity_models = original_models
+            PILOT.command_version = original_version
+            PILOT.run_antigravity = original_run
+
+        self.assertTrue(result["passed"], result["checks"])
+        run = result["runs"][0]
+        self.assertEqual("host-brokered-context", run["adapter_mode"])
+        self.assertTrue(run["checks"]["tool_provenance_verified"])
+        self.assertTrue(run["checks"]["broker_provenance_verified"])
+        self.assertEqual(0, run["tool_provenance"]["tool_call_count"])
+        self.assertEqual(["status", "context"], run["broker_provenance"]["operations"])
+
+    def test_broker_failure_stops_before_antigravity_provider_invocation(self) -> None:
+        case = PILOT.load_cases()[0]
+        original_which = PILOT.shutil.which
+        original_models = PILOT.antigravity_models
+        original_version = PILOT.command_version
+        original_prepare = PILOT.prepare_evidence_prompt
+        original_run = PILOT.run_antigravity
+
+        try:
+            PILOT.shutil.which = lambda name: "agy" if name == "agy" else None
+            PILOT.antigravity_models = lambda _: ["gemini-test"]
+            PILOT.command_version = lambda _: "Antigravity CLI 1.1.22"
+            PILOT.prepare_evidence_prompt = lambda **_: (_ for _ in ()).throw(
+                RuntimeError("bounded broker failure")
+            )
+            PILOT.run_antigravity = lambda **_: self.fail("provider was invoked")
+            result = PILOT.run_pilot(
+                PILOT.argparse.Namespace(
+                    routes=("gemini-antigravity",),
+                    conditions=("elm",),
+                    case_ids=(case["id"],),
+                    openai_model=None,
+                    gemini_model="gemini-test",
+                    antigravity_claude_model=None,
+                    claude_code_model=None,
+                    antigravity_adapter="host-brokered-context",
+                    timeout=5.0,
+                    max_cost_usd=1.0,
+                )
+            )
+        finally:
+            PILOT.shutil.which = original_which
+            PILOT.antigravity_models = original_models
+            PILOT.command_version = original_version
+            PILOT.prepare_evidence_prompt = original_prepare
+            PILOT.run_antigravity = original_run
+
+        self.assertFalse(result["passed"])
+        self.assertEqual("broker_failed", result["runs"][0]["status"])
+        self.assertFalse(
+            result["runs"][0]["checks"]["broker_provenance_verified"]
+        )
+
+    def test_antigravity_file_tools_remain_fail_closed(self) -> None:
+        for tool_name in ("list_dir", "view_file"):
+            with self.subTest(tool_name=tool_name):
+                audit = PILOT.empty_tool_audit("reported")
+                audit.update(
+                    {
+                        "tool_call_count": 3,
+                        "mcp_tool_call_count": 2,
+                        "non_mcp_tool_call_count": 1,
+                        "elm_tools": ["status", "context"],
+                        "unapproved_tool_names": [tool_name],
+                    }
+                )
+
+                self.assertFalse(PILOT.tool_audit_passes("elm", audit))
 
     def test_legacy_provider_errors_collapse_to_bounded_categories(self) -> None:
         raw = "conversation_id=secret Individual quota reached"
@@ -427,6 +746,27 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
         self.assertTrue(all(elm.values()))
         self.assertTrue(all(no_memory.values()))
 
+    def test_host_brokered_evidence_is_reported_as_provided_not_model_retrieved(self) -> None:
+        case = PILOT.load_cases()[0]
+        section_key = "section_11111111-1111-4111-8111-111111111111"
+
+        def evaluate(status: str) -> dict[str, bool]:
+            return PILOT.evaluate_response(
+                {
+                    "answer": case["expected_answer"],
+                    "source_path": case["expected_source_path"],
+                    "section_key": section_key,
+                    "evidence_status": status,
+                },
+                case=case,
+                condition="elm",
+                section_key=section_key,
+                adapter_mode="host-brokered-context",
+            )
+
+        self.assertTrue(all(evaluate("provided").values()))
+        self.assertFalse(evaluate("retrieved")["evidence_correct"])
+
     def test_evaluation_normalizes_windows_source_separators(self) -> None:
         case = PILOT.load_cases()[0]
         checks = PILOT.evaluate_response(
@@ -498,6 +838,27 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
         self.assertTrue(gemini["comparable"])
         self.assertEqual(20, gemini["elm_minus_full_corpus"])
         self.assertFalse(claude["comparable"])
+
+    def test_comparisons_never_pair_across_adapter_modes(self) -> None:
+        def run(condition: str, adapter_mode: str) -> dict:
+            return {
+                "route": "gemini-antigravity",
+                "adapter_mode": adapter_mode,
+                "case_id": "case",
+                "condition": condition,
+                "passed": True,
+                "usage": {"availability": "reported", "total_tokens": 100},
+            }
+
+        comparisons = PILOT.build_comparisons(
+            [
+                run("elm", "host-brokered-context"),
+                run("full_corpus", "direct-mcp"),
+            ]
+        )
+
+        self.assertEqual(2, len(comparisons))
+        self.assertTrue(all(not item["comparable"] for item in comparisons))
 
 
 if __name__ == "__main__":

@@ -111,6 +111,20 @@ class MCPCommandError(RuntimeError):
     """A sanitized failure returned by the canonical CLI subprocess."""
 
 
+def _cli_prefix() -> list[str]:
+    """Resolve the canonical CLI in source installs and frozen distributions."""
+    if getattr(sys, "frozen", False):
+        suffix = ".exe" if os.name == "nt" else ""
+        executable = Path(sys.executable).with_name(f"elm{suffix}")
+        if not executable.is_file():
+            raise MCPCommandError(
+                "The bundled elm executable is missing next to elm-mcp. "
+                "Repair or reinstall ELM."
+            )
+        return [str(executable)]
+    return [sys.executable, "-m", "elm_memory.cli"]
+
+
 def _scope_arguments(
     *,
     project: str | None,
@@ -138,19 +152,18 @@ def _invoke_cli(
 ) -> dict[str, Any]:
     """Run the same package's CLI contract and decode one JSON response."""
     environment = os.environ.copy()
-    package_parent = str(Path(__file__).resolve().parents[1])
-    existing = environment.get("PYTHONPATH")
-    environment["PYTHONPATH"] = (
-        package_parent if not existing else os.pathsep.join((package_parent, existing))
-    )
+    if not getattr(sys, "frozen", False):
+        package_parent = str(Path(__file__).resolve().parents[1])
+        existing = environment.get("PYTHONPATH")
+        environment["PYTHONPATH"] = (
+            package_parent if not existing else os.pathsep.join((package_parent, existing))
+        )
     environment["PYTHONIOENCODING"] = "utf-8"
     environment["PYTHONUTF8"] = "1"
     try:
         completed = subprocess.run(
             [
-                sys.executable,
-                "-m",
-                "elm_memory.cli",
+                *_cli_prefix(),
                 *arguments,
                 "--root",
                 str(root),

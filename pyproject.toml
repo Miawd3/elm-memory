@@ -4,20 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "elm-memory"
-version = "0.10.0.dev0"
+version = "1.0.0"
 description = "Local, inspectable project memory and deterministic context retrieval for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [
-  { name = "ELM contributors" }
+  { name = "Miawd3" }
 ]
 keywords = ["agents", "memory", "markdown", "sqlite", "fts5", "retrieval"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 4 - Beta",
   "Environment :: Console",
   "Intended Audience :: Developers",
+  "Operating System :: Microsoft :: Windows :: Windows 10",
+  "Operating System :: Microsoft :: Windows :: Windows 11",
+  "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -27,8 +30,18 @@ classifiers = [
 ]
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/Miawd3/elm-memory"
+Documentation = "https://github.com/Miawd3/elm-memory#readme"
+Issues = "https://github.com/Miawd3/elm-memory/issues"
+Source = "https://github.com/Miawd3/elm-memory"
+
 [project.optional-dependencies]
 mcp = ["mcp>=2.1.1,<3"]
+release = [
+  "build>=1.3,<2",
+  "pyinstaller>=6.22,<7",
+]
 
 [project.scripts]
 elm = "elm_memory.cli:main"

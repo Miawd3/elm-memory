@@ -348,6 +348,33 @@ class CorpusSizeCurveContractTests(unittest.TestCase):
             )
         )
 
+    def test_brokered_antigravity_claim_scope_requires_explicit_acknowledgement(self) -> None:
+        arguments = argparse.Namespace(
+            claim_capable=True,
+            acknowledge_brokered_claim_scope=False,
+            antigravity_adapter="host-brokered-context",
+            case_ids=("orion_storage", "orion_time", "orion_logs"),
+            repeats=2,
+            min_pairs_for_claim=5,
+            target_corpus_tokens=(2_000, 8_000),
+            min_consecutive_sizes=2,
+            routes=("gemini-antigravity",),
+            openai_model=None,
+            gemini_model="gemini-test",
+            antigravity_claude_model=None,
+            claude_code_model=None,
+            openai_reasoning_effort=None,
+        )
+        models = {"gemini-antigravity": "gemini-test"}
+
+        self.assertFalse(CURVE.claim_capable_configuration_is_valid(arguments, models))
+        arguments.acknowledge_brokered_claim_scope = True
+        self.assertTrue(CURVE.claim_capable_configuration_is_valid(arguments, models))
+        self.assertEqual(
+            "brokered_context_prompt_efficiency_bounded_panel",
+            CURVE.configured_claim_scope(arguments),
+        )
+
     def test_preflight_plan_builds_exact_roots_without_provider_calls(self) -> None:
         arguments = argparse.Namespace(
             routes=("codex",),

@@ -8,7 +8,16 @@ import unittest
 from _bootstrap import REPOSITORY_ROOT
 
 
-EXCLUDED_PARTS = {".git", ".venv", ".elm", "dist", "build", "__pycache__"}
+EXCLUDED_PARTS = {
+    ".git",
+    ".venv",
+    ".release-venv",
+    ".elm",
+    "dist",
+    "build",
+    "release",
+    "__pycache__",
+}
 TEXT_SUFFIXES = {".md", ".py", ".json", ".toml", ".yml", ".yaml", ".txt"}
 
 
@@ -60,18 +69,32 @@ class RepositoryHygieneTests(unittest.TestCase):
 
         self.assertEqual([], failures)
 
-    def test_readme_relative_markdown_links_resolve(self) -> None:
-        readme = REPOSITORY_ROOT / "README.md"
-        links = re.findall(r"(?<!!)\[[^\]]+\]\(([^)]+)\)", readme.read_text(encoding="utf-8"))
+    def test_relative_markdown_links_resolve(self) -> None:
         missing = []
-        for target in links:
-            if target.startswith(("http://", "https://", "mailto:")):
+        for document in REPOSITORY_ROOT.rglob("*.md"):
+            if set(document.relative_to(REPOSITORY_ROOT).parts) & EXCLUDED_PARTS:
                 continue
-            path_part = target.split("#", 1)[0]
-            if path_part and not (readme.parent / path_part).is_file():
-                missing.append(target)
+            links = re.findall(
+                r"(?<!!)\[[^\]]+\]\(([^)]+)\)",
+                document.read_text(encoding="utf-8"),
+            )
+            for target in links:
+                if target.startswith(("http://", "https://", "mailto:")):
+                    continue
+                path_part = target.split("#", 1)[0]
+                if path_part and not (document.parent / path_part).resolve().is_file():
+                    missing.append(f"{document.relative_to(REPOSITORY_ROOT)} -> {target}")
 
         self.assertEqual([], missing)
+
+    def test_repository_has_no_hosted_automation_workflow(self) -> None:
+        workflow_directory = REPOSITORY_ROOT / ".github" / "workflows"
+        workflows = [] if not workflow_directory.exists() else [
+            path for path in workflow_directory.iterdir()
+            if path.is_file() and path.suffix.lower() in {".yml", ".yaml"}
+        ]
+
+        self.assertEqual([], workflows)
 
     def test_apache_license_is_declared_and_packaged(self) -> None:
         configuration = tomllib.loads(
@@ -84,7 +107,7 @@ class RepositoryHygieneTests(unittest.TestCase):
         self.assertEqual(["LICENSE", "NOTICE"], configuration["project"]["license-files"])
         self.assertIn("Apache License", license_text)
         self.assertIn("Version 2.0, January 2004", license_text)
-        self.assertIn("ELM contributors", notice_text)
+        self.assertIn("Miawd3 and ELM contributors", notice_text)
 
 
 if __name__ == "__main__":

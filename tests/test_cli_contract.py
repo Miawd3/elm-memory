@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -61,6 +62,7 @@ class PublicCliContractTests(unittest.TestCase):
         )
 
         for command in (
+            "init",
             "sync",
             "rebuild",
             "search",
@@ -91,8 +93,23 @@ class PublicCliContractTests(unittest.TestCase):
             self.assertIn(command, completed.stdout)
         self.assertIn("ids", completed.stdout)
 
-    def test_package_exposes_pre_release_version(self) -> None:
-        self.assertEqual("0.10.0.dev0", elm_memory.__version__)
+    def test_package_exposes_release_version(self) -> None:
+        self.assertEqual("1.0.0", elm_memory.__version__)
+
+    def test_module_exposes_release_version(self) -> None:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(SOURCE_ROOT)
+        completed = subprocess.run(
+            [sys.executable, "-m", "elm_memory", "--version"],
+            cwd=REPOSITORY_ROOT,
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+
+        self.assertEqual("elm 1.0.0", completed.stdout.strip())
 
     def test_json_output_is_utf8_under_a_legacy_process_encoding(self) -> None:
         with tempfile.TemporaryDirectory(prefix="elm-unicode-") as temporary:
@@ -136,6 +153,75 @@ class PublicCliContractTests(unittest.TestCase):
 
         self.assertNotIn(private_prefix, source)
         self.assertNotIn("local_" + "Info_codex", source)
+
+    def test_init_creates_minimal_healthy_root_and_refuses_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="elm-init-parent-") as temporary:
+            root = Path(temporary) / "memory"
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(SOURCE_ROOT)
+            created = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "elm_memory",
+                    "init",
+                    "--root",
+                    str(root),
+                    "--project",
+                    "orion",
+                    "--json",
+                ],
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            repeated = subprocess.run(
+                [sys.executable, "-m", "elm_memory", "init", "--root", str(root)],
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            status = subprocess.run(
+                [sys.executable, "-m", "elm_memory", "status", "--root", str(root), "--json"],
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            identity_payload = json.loads(
+                (root / "00_registry" / "ELM_ROOT_ID.json").read_text(encoding="utf-8")
+            )
+
+        created_payload = json.loads(created.stdout)
+        status_payload = json.loads(status.stdout)
+        self.assertEqual(5, created_payload["documents_created"])
+        self.assertEqual("orion", created_payload["project"])
+        self.assertTrue(created_payload["root_id"].startswith("root_"))
+        self.assertEqual(created_payload["root_id"], identity_payload["root_id"])
+        self.assertTrue(status_payload["healthy"])
+        self.assertEqual(5, status_payload["indexed_documents"])
+        self.assertNotEqual(0, repeated.returncode)
+        self.assertIn("refusing to overwrite", repeated.stderr)
+
+    def test_init_can_set_default_root_pointer(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="elm-init-config-") as temporary:
+            temporary_path = Path(temporary)
+            root = temporary_path / "memory"
+            pointer = temporary_path / "config" / "root"
+            args = argparse.Namespace(root=str(root), project="main", set_default=True, json=True)
+            with patch.object(cli, "CONFIG_POINTER", pointer), patch("sys.stdout"):
+                result = cli.command_init(args)
+
+            self.assertEqual(0, result)
+            self.assertEqual(str(root.resolve()), pointer.read_text(encoding="utf-8").strip())
 
 
 if __name__ == "__main__":

@@ -26,6 +26,12 @@ The CLI resolves its root from `--root`, `ELM_ROOT`, `~/.elm-system/root`, or th
 
 If no root is available, say so instead of inventing memory claims.
 
+Create a new root only when the user explicitly asks for one and the target path
+does not already exist. Use `elm init --root PATH --project NAME --set-default`
+for the minimal Markdown layout and first disposable index. `init` refuses to
+overwrite an existing path. Do not use root creation as a fallback for a missing,
+moved, stale, or unhealthy existing root.
+
 ## Choose the interface
 
 Prefer the direct CLI when it is available, especially for sync, diagnostics,

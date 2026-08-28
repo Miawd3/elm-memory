@@ -15,10 +15,12 @@ from pathlib import Path, PurePosixPath
 import re
 import sqlite3
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from typing import Iterable
 
+from . import __version__
 from .atomic import atomic_write_bytes
 from .canonical import CanonicalJSONError, parse_closed_json
 from .context import (
@@ -1884,6 +1886,133 @@ def emit_error(
     print(f"elm: {message}", file=sys.stderr)
 
 
+def _initial_markdown(project: str, today: str) -> dict[PurePosixPath, str]:
+    return {
+        PurePosixPath("00_registry/ROOT_INDEX.md"): f"""# ELM Root Index
+
+Title: ELM Root Index
+Scope: Entry point for this local memory root.
+Tags: elm, registry, index
+Related files: ../10_shared/SHARED_CONTEXT.md, ../20_projects/{project}/PROJECT_HUB.md
+Last updated: {today}
+Status: active
+Summary: Start here to find shared context and active projects.
+
+## Working rule
+
+Keep durable knowledge in Markdown. Treat `.elm/index.sqlite` as disposable derived state.
+""",
+        PurePosixPath("10_shared/SHARED_CONTEXT.md"): f"""# Shared Context
+
+Title: Shared Context
+Scope: Durable facts and preferences shared across projects.
+Tags: elm, shared, context
+Related files: ../00_registry/ROOT_INDEX.md
+Last updated: {today}
+Status: active
+Summary: Cross-project context that is useful to coding agents.
+
+## Current context
+
+- Add only durable, decision-relevant information here.
+""",
+        PurePosixPath(f"20_projects/{project}/PROJECT_HUB.md"): f"""# {project} Project Hub
+
+Title: {project} Project Hub
+Scope: Entry point and durable overview for the {project} project.
+Tags: project, hub, {project}
+Related files: ACTIVE_CONTEXT.md, DECISIONS.md, ../../00_registry/ROOT_INDEX.md
+Last updated: {today}
+Status: active
+Summary: Project purpose, boundaries, and links to current work and decisions.
+
+## Purpose
+
+- Describe what this project is trying to achieve.
+
+## Boundaries
+
+- Record durable constraints that should survive across agent sessions.
+""",
+        PurePosixPath(f"20_projects/{project}/ACTIVE_CONTEXT.md"): f"""# {project} Active Context
+
+Title: {project} Active Context
+Scope: Current task state, next actions, and decision-sensitive open questions.
+Tags: project, active-context, {project}
+Related files: PROJECT_HUB.md, DECISIONS.md
+Last updated: {today}
+Status: active
+Summary: The smallest current-state handoff needed to continue work.
+
+## Current state
+
+- Add the current milestone and the next concrete action.
+""",
+        PurePosixPath(f"20_projects/{project}/DECISIONS.md"): f"""# {project} Decisions
+
+Title: {project} Decisions
+Scope: Accepted project decisions and the reasons that should not be rediscovered.
+Tags: project, decisions, {project}
+Related files: PROJECT_HUB.md, ACTIVE_CONTEXT.md
+Last updated: {today}
+Status: active
+Summary: Durable decisions for the project.
+
+## Accepted decisions
+
+- Record a decision only after it is accepted or verified.
+""",
+    }
+
+
+def command_init(args) -> int:
+    root = Path(args.root).expanduser().resolve()
+    if root.exists():
+        raise SystemExit(f"ELM init target already exists; refusing to overwrite it: {root}")
+    project = args.project.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", project):
+        raise SystemExit("Project must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}.")
+    parent = root.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    today = datetime.now(timezone.utc).date().isoformat()
+    documents = _initial_markdown(project, today)
+    with tempfile.TemporaryDirectory(prefix=".elm-init-", dir=parent) as temporary:
+        payload = Path(temporary) / "root"
+        for relative, content in documents.items():
+            destination = payload.joinpath(*relative.parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(content, encoding="utf-8", newline="\n")
+        (payload / "99_archive").mkdir(parents=True)
+        (payload / "backups").mkdir(parents=True)
+        identity = bootstrap_root_identity(
+            payload,
+            apply=True,
+            creator="elm-init",
+            lock_timeout=10.0,
+            recover_stale=False,
+        )
+        con = connect(payload)
+        try:
+            indexed = sync(con, payload, force=True)
+        finally:
+            con.close()
+        os.replace(payload, root)
+
+    if args.set_default:
+        CONFIG_POINTER.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(CONFIG_POINTER, (str(root) + "\n").encode("utf-8"))
+    result = {
+        "root": str(root),
+        "project": project,
+        "root_id": identity["root_id"],
+        "documents_created": len(documents),
+        "default_root_configured": bool(args.set_default),
+        "indexed": indexed,
+    }
+    emit(result, args.json)
+    return 0
+
+
 def add_common(p):
     p.add_argument("--root", help="ELM root. Defaults to ELM_ROOT, a config pointer, or the current directory.")
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
@@ -1920,7 +2049,14 @@ def add_governance_actor(p) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="elm", description="ELM deterministic index and progressive-retrieval CLI")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("init", help="Create a new minimal ELM root without overwriting existing data.")
+    p.add_argument("--root", required=True, help="New directory to create as the ELM root.")
+    p.add_argument("--project", default="main", help="Initial project name (default: main).")
+    p.add_argument("--set-default", action="store_true", help="Store this root in the per-user ELM pointer.")
+    p.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
 
     p = sub.add_parser("sync", help="Incrementally index changed Markdown files.")
     add_common(p); p.add_argument("--force", action="store_true")
@@ -2258,6 +2394,8 @@ def main() -> int:
     configure_standard_streams()
     parser = build_parser()
     args = parser.parse_args()
+    if args.command == "init":
+        return command_init(args)
     root = resolve_root(getattr(args, "root", None))
     if not root.is_dir():
         raise SystemExit(f"ELM root is not a directory: {root}")

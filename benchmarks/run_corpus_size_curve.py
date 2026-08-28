@@ -221,22 +221,24 @@ def expected_pair_identities(
 
 
 def build_pair_comparisons(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, int, str, int], dict[str, dict[str, Any]]] = {}
+    grouped: dict[tuple[str, str, int, str, int], dict[str, dict[str, Any]]] = {}
     for run in runs:
         key = (
             run["route"],
+            run.get("adapter_mode", "direct-mcp"),
             run["target_corpus_estimated_tokens"],
             run["case_id"],
             run["repeat"],
         )
         grouped.setdefault(key, {})[run["condition"]] = run
     comparisons: list[dict[str, Any]] = []
-    for (route, target, case_id, repeat), conditions in sorted(grouped.items()):
+    for (route, adapter_mode, target, case_id, repeat), conditions in sorted(grouped.items()):
         elm = conditions.get("elm")
         full = conditions.get("full_corpus")
         ordered = sorted(conditions.values(), key=lambda run: run["sequence"])
         item: dict[str, Any] = {
             "route": route,
+            "adapter_mode": adapter_mode,
             "target_corpus_estimated_tokens": target,
             "actual_corpus_estimated_tokens": (
                 ordered[0].get("actual_corpus_estimated_tokens") if ordered else None
@@ -276,13 +278,18 @@ def aggregate_curve(
     alpha: float,
     expected_pairs: dict[tuple[str, int], set[tuple[str, int]]] | None = None,
 ) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    grouped: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     for item in comparisons:
         grouped.setdefault(
-            (item["route"], item["target_corpus_estimated_tokens"]), []
+            (
+                item["route"],
+                item.get("adapter_mode", "direct-mcp"),
+                item["target_corpus_estimated_tokens"],
+            ),
+            [],
         ).append(item)
     aggregates: list[dict[str, Any]] = []
-    for (route, target), items in sorted(grouped.items()):
+    for (route, adapter_mode, target), items in sorted(grouped.items()):
         comparable = [item for item in items if item["comparable"]]
         ratios = [
             int(item["elm_value"]) / int(item["full_corpus_value"])
@@ -316,6 +323,7 @@ def aggregate_curve(
         aggregates.append(
             {
                 "route": route,
+                "adapter_mode": adapter_mode,
                 "target_corpus_estimated_tokens": target,
                 "actual_corpus_estimated_tokens": (
                     comparable[0].get("actual_corpus_estimated_tokens")
@@ -351,11 +359,21 @@ def build_crossover_summary(
     global_integrity_passed: bool = True,
     claim_mode_enabled: bool = True,
 ) -> list[dict[str, Any]]:
-    routes = sorted({item["route"] for item in aggregates})
+    route_adapters = sorted(
+        {
+            (item["route"], item.get("adapter_mode", "direct-mcp"))
+            for item in aggregates
+        }
+    )
     summaries: list[dict[str, Any]] = []
-    for route in routes:
+    for route, adapter_mode in route_adapters:
         items = sorted(
-            (item for item in aggregates if item["route"] == route),
+            (
+                item
+                for item in aggregates
+                if item["route"] == route
+                and item.get("adapter_mode", "direct-mcp") == adapter_mode
+            ),
             key=lambda item: item["target_corpus_estimated_tokens"],
         )
         crossover = None
@@ -372,6 +390,7 @@ def build_crossover_summary(
         summaries.append(
             {
                 "route": route,
+                "adapter_mode": adapter_mode,
                 "benchmark_qualified_crossover": crossover is not None,
                 "crossover_target_corpus_estimated_tokens": crossover,
                 "interpretation": (
@@ -460,17 +479,26 @@ def validate_static_contract(
 
 def route_models(arguments: argparse.Namespace) -> tuple[dict[str, str | None], list[str]]:
     agy = shutil.which("agy")
-    models = PILOT.antigravity_models(agy) if agy else []
+    requests = {
+        "gemini-antigravity": arguments.gemini_model,
+        "claude-antigravity": arguments.antigravity_claude_model,
+    }
+    discovery_required = any(
+        route in arguments.routes and requests[route] is None for route in requests
+    )
+    models = PILOT.antigravity_models(agy) if agy and discovery_required else []
     return (
         {
             "codex": arguments.openai_model,
-            "gemini-antigravity": PILOT.select_model(
-                models, arguments.gemini_model, ("gemini-",)
+            "gemini-antigravity": (
+                arguments.gemini_model
+                or PILOT.select_model(models, None, ("gemini-",))
             ),
-            "claude-antigravity": PILOT.select_model(
-                models,
-                arguments.antigravity_claude_model,
-                ("claude-sonnet-", "claude-opus-"),
+            "claude-antigravity": (
+                arguments.antigravity_claude_model
+                or PILOT.select_model(
+                    models, None, ("claude-sonnet-", "claude-opus-")
+                )
             ),
             "claude-code": arguments.claude_code_model,
         },
@@ -478,11 +506,34 @@ def route_models(arguments: argparse.Namespace) -> tuple[dict[str, str | None], 
     )
 
 
+def configured_antigravity_adapter(arguments: argparse.Namespace) -> str:
+    return getattr(
+        arguments,
+        "antigravity_adapter",
+        PILOT.DEFAULT_ANTIGRAVITY_ADAPTER,
+    )
+
+
+def configured_claim_scope(arguments: argparse.Namespace) -> str:
+    if (
+        any(route.endswith("antigravity") for route in arguments.routes)
+        and configured_antigravity_adapter(arguments) == "host-brokered-context"
+    ):
+        return "brokered_context_prompt_efficiency_bounded_panel"
+    return "bounded_benchmark_panel_only"
+
+
 def claim_capable_configuration_is_valid(
     arguments: argparse.Namespace, models: dict[str, str | None]
 ) -> bool:
     if not arguments.claim_capable:
         return True
+    if (
+        configured_claim_scope(arguments)
+        == "brokered_context_prompt_efficiency_bounded_panel"
+        and not getattr(arguments, "acknowledge_brokered_claim_scope", False)
+    ):
+        return False
     requested = {
         "codex": arguments.openai_model,
         "gemini-antigravity": arguments.gemini_model,
@@ -551,6 +602,9 @@ def execute_provider_cell(
             condition=cell["condition"],
             model=model,
             timeout=timeout,
+            adapter_mode=PILOT.route_adapter_mode(
+                route, configured_antigravity_adapter(arguments)
+            ),
         )
     return PILOT.run_claude_code(
         workspace=workspace,
@@ -574,18 +628,31 @@ def finalize_run(
     elapsed: float,
     case: dict[str, str],
     section_key: str,
+    broker_audit: dict[str, Any] | None = None,
+    retrieval_elapsed: float = 0.0,
+    prompt: str | None = None,
 ) -> None:
+    broker_audit = broker_audit or PILOT.empty_broker_audit()
+    adapter_mode = run.get("adapter_mode", "direct-mcp")
     checks = PILOT.evaluate_response(
         response,
         case=case,
         condition=run["condition"],
         section_key=section_key,
+        adapter_mode=adapter_mode,
     )
     checks["provider_usage_complete"] = PILOT.usage_complete_for_route(
         run["route"], usage
     )
     checks["tool_provenance_verified"] = PILOT.tool_audit_passes(
-        run["condition"], audit
+        run["condition"], audit, adapter_mode
+    )
+    checks["broker_provenance_verified"] = PILOT.broker_audit_passes(
+        run["condition"],
+        adapter_mode,
+        broker_audit,
+        prompt=prompt,
+        case=case,
     )
     if status == "completed":
         quality_keys = {
@@ -597,7 +664,10 @@ def finalize_run(
             final_status = "failed_quality"
         elif not checks["provider_usage_complete"]:
             final_status = "telemetry_unavailable"
-        elif not checks["tool_provenance_verified"]:
+        elif not (
+            checks["tool_provenance_verified"]
+            and checks["broker_provenance_verified"]
+        ):
             final_status = "provenance_unverified"
         else:
             final_status = "passed"
@@ -610,8 +680,11 @@ def finalize_run(
             "checks": checks,
             "usage": usage,
             "tool_provenance": audit,
+            "broker_provenance": broker_audit,
             "observed_response": PILOT.reportable_observed_response(response, checks),
-            "elapsed_ms": round(elapsed, 3),
+            "retrieval_elapsed_ms": round(retrieval_elapsed, 3),
+            "provider_elapsed_ms": round(elapsed, 3),
+            "elapsed_ms": round(retrieval_elapsed + elapsed, 3),
         }
     )
 
@@ -655,26 +728,36 @@ def build_preflight_plan(arguments: argparse.Namespace) -> dict[str, Any]:
                     )
                 }
             )
-            for condition in CURVE_CONDITIONS:
-                estimates = [
-                    PILOT.estimate_tokens(
-                        PILOT.build_prompt(case, condition, record["corpus"])
+            for route in arguments.routes:
+                for condition in CURVE_CONDITIONS:
+                    estimates = []
+                    for case in selected_cases:
+                        prompt, _, _ = PILOT.prepare_evidence_prompt(
+                            route=route,
+                            root=scratch / "memory" / str(target),
+                            case=case,
+                            condition=condition,
+                            corpus=record["corpus"],
+                            antigravity_adapter=configured_antigravity_adapter(arguments),
+                        )
+                        estimates.append(PILOT.estimate_tokens(prompt))
+                    maximum = max(estimates)
+                    prompt_cap_passed = (
+                        prompt_cap_passed
+                        and maximum <= arguments.max_prompt_estimated_tokens
                     )
-                    for case in selected_cases
-                ]
-                maximum = max(estimates)
-                prompt_cap_passed = (
-                    prompt_cap_passed
-                    and maximum <= arguments.max_prompt_estimated_tokens
-                )
-                prompt_estimates.append(
-                    {
-                        "target_corpus_estimated_tokens": target,
-                        "condition": condition,
-                        "minimum_initial_prompt_estimated_tokens": min(estimates),
-                        "maximum_initial_prompt_estimated_tokens": maximum,
-                    }
-                )
+                    prompt_estimates.append(
+                        {
+                            "route": route,
+                            "adapter_mode": PILOT.route_adapter_mode(
+                                route, configured_antigravity_adapter(arguments)
+                            ),
+                            "target_corpus_estimated_tokens": target,
+                            "condition": condition,
+                            "minimum_initial_prompt_estimated_tokens": min(estimates),
+                            "maximum_initial_prompt_estimated_tokens": maximum,
+                        }
+                    )
     checks["preflight_prompt_cap_passed"] = prompt_cap_passed
     return {
         "schema": "elm-corpus-size-curve-plan-v1",
@@ -688,11 +771,12 @@ def build_preflight_plan(arguments: argparse.Namespace) -> dict[str, Any]:
             "planned_provider_runs": len(schedule),
             "planned_pairs": len(schedule) // len(CURVE_CONDITIONS),
             "claim_capable_mode": arguments.claim_capable,
-            "claim_scope": "bounded_benchmark_panel_only",
+            "claim_scope": configured_claim_scope(arguments),
             "statistical_unit": "case_repeat_pair",
             "population_generalization_supported": False,
             "codex_model_requested": arguments.openai_model,
             "codex_reasoning_effort_requested": arguments.openai_reasoning_effort,
+            "antigravity_adapter": configured_antigravity_adapter(arguments),
             "max_prompt_estimated_tokens": arguments.max_prompt_estimated_tokens,
             "max_total_seconds": arguments.max_total_seconds,
             "max_runs": arguments.max_runs,
@@ -762,8 +846,13 @@ def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
             size_records[target] = record
         for cell in schedule:
             record = size_records[cell["target_corpus_estimated_tokens"]]
-            prompt = PILOT.build_prompt(
-                selected_cases[cell["case_id"]], cell["condition"], record["corpus"]
+            prompt, _, _ = PILOT.prepare_evidence_prompt(
+                route=cell["route"],
+                root=scratch / "memory" / str(cell["target_corpus_estimated_tokens"]),
+                case=selected_cases[cell["case_id"]],
+                condition=cell["condition"],
+                corpus=record["corpus"],
+                antigravity_adapter=configured_antigravity_adapter(arguments),
             )
             if PILOT.estimate_tokens(prompt) > arguments.max_prompt_estimated_tokens:
                 preflight_prompt_cap_passed = False
@@ -789,7 +878,14 @@ def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
                 target = cell["target_corpus_estimated_tokens"]
                 record = size_records[target]
                 case = selected_cases[cell["case_id"]]
-                prompt = PILOT.build_prompt(case, cell["condition"], record["corpus"])
+                prompt, broker_audit, retrieval_elapsed = PILOT.prepare_evidence_prompt(
+                    route=cell["route"],
+                    root=scratch / "memory" / str(target),
+                    case=case,
+                    condition=cell["condition"],
+                    corpus=record["corpus"],
+                    antigravity_adapter=configured_antigravity_adapter(arguments),
+                )
                 workspace = (
                     scratch
                     / "workspaces"
@@ -801,7 +897,13 @@ def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
                 )
                 workspace.mkdir(parents=True)
                 run = PILOT.base_run(
-                    cell["route"], cell["condition"], cell["case_id"], models[cell["route"]]
+                    cell["route"],
+                    cell["condition"],
+                    cell["case_id"],
+                    models[cell["route"]],
+                    adapter_mode=PILOT.route_adapter_mode(
+                        cell["route"], configured_antigravity_adapter(arguments)
+                    ),
                 )
                 run.update(cell)
                 run.update(
@@ -838,6 +940,9 @@ def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
                     elapsed=elapsed,
                     case=case,
                     section_key=record["section_keys"][cell["case_id"]],
+                    broker_audit=broker_audit,
+                    retrieval_elapsed=retrieval_elapsed,
+                    prompt=prompt,
                 )
                 runs.append(run)
                 if arguments.fail_fast and not run["passed"]:
@@ -875,6 +980,8 @@ def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
         and all(run["checks"]["provider_usage_complete"] for run in runs),
         "all_selected_runs_have_verified_tool_provenance": len(runs) == len(schedule)
         and all(run["checks"]["tool_provenance_verified"] for run in runs),
+        "all_selected_runs_have_verified_broker_provenance": len(runs) == len(schedule)
+        and all(run["checks"]["broker_provenance_verified"] for run in runs),
         "all_required_pairs_are_comparable": (
             len(comparisons) == expected_pair_count
             and all(item["comparable"] for item in comparisons)
@@ -917,11 +1024,12 @@ def run_curve(arguments: argparse.Namespace) -> dict[str, Any]:
             "target_corpus_estimated_tokens": list(arguments.target_corpus_tokens),
             "repeats": arguments.repeats,
             "claim_capable_mode": arguments.claim_capable,
-            "claim_scope": "bounded_benchmark_panel_only",
+            "claim_scope": configured_claim_scope(arguments),
             "statistical_unit": "case_repeat_pair",
             "population_generalization_supported": False,
             "fail_fast": arguments.fail_fast,
             "codex_reasoning_effort_requested": arguments.openai_reasoning_effort,
+            "antigravity_adapter": configured_antigravity_adapter(arguments),
             "timeout_seconds_per_run": arguments.timeout,
             "max_total_seconds": arguments.max_total_seconds,
             "max_prompt_estimated_tokens": arguments.max_prompt_estimated_tokens,
@@ -969,6 +1077,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable crossover claims only with an explicit reproducible route configuration.",
     )
     parser.add_argument(
+        "--acknowledge-brokered-claim-scope",
+        action="store_true",
+        help=(
+            "Acknowledge that host-brokered Antigravity runs support only a bounded "
+            "context-prompt efficiency claim, not an autonomous MCP tool-use claim."
+        ),
+    )
+    parser.add_argument(
         "--fail-fast",
         action="store_true",
         help="Stop after the first failed provider cell.",
@@ -988,6 +1104,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--gemini-model")
     parser.add_argument("--antigravity-claude-model")
+    parser.add_argument(
+        "--antigravity-adapter",
+        choices=PILOT.ANTIGRAVITY_ADAPTERS,
+        default=PILOT.DEFAULT_ANTIGRAVITY_ADAPTER,
+    )
     parser.add_argument("--claude-code-model")
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--max-total-seconds", type=float, default=7_200.0)
