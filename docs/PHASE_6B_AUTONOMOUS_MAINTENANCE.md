@@ -1,6 +1,6 @@
 # Phase 6B — Autonomous memory maintenance
 
-Status: Phase 6B.1-6B.3 implemented and locally validated; Phase 6B.3 hosted validation pending
+Status: Phase 6B.1-6B.3 implemented and validated; Phase 6B.3 merge pending
 
 Date: 2026-08-28
 

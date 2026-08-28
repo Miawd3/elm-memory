@@ -482,7 +482,7 @@ Phase order:
 6. Phase 6A: opt-in bounded autonomous `agent_curated` memory (implemented);
 7. Phase 6B.1: deterministic validity leases (implemented and validated);
 8. Phase 6B.2: source-verified CAS supersession and active-lease renewal (implemented and validated);
-9. Phase 6B.3: bounded logical lineage compaction with exact expansion (implemented and locally validated);
+9. Phase 6B.3: bounded logical lineage compaction with exact expansion (implemented and validated);
 10. optional semantic retrieval only after measured deterministic failures.
 
 ## License, privacy, and publication status

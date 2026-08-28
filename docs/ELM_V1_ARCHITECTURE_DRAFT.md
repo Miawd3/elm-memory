@@ -1,6 +1,6 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: active staged architecture; Phases 1–6B.2 verified and merged; Phase 6B.3 locally validated
+Status: active staged architecture; Phases 1–6B.2 verified and merged; Phase 6B.3 validated
 
 Last updated: 2026-08-28
 
@@ -63,7 +63,7 @@ mutation remain unavailable.
 - Phase 6B.2 is implemented and validated: source-contained, byte-verified CAS
   can replace only the current `agent_curated` lineage head while preserving
   atomic history and authority.
-- Phase 6B.3 is implemented and locally validated: the existing `history` tool
+- Phase 6B.3 is implemented and validated: the existing `history` tool
   can return a token-bounded derived lineage manifest and expand one exact
   canonical lineage without writing a compaction record.
 - Raw evidence snapshots, semantic conflict resolution, destructive or

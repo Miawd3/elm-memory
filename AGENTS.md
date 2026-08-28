@@ -2,9 +2,9 @@
 
 ## Current phase
 
-Phases 1-5A, Phase 6A, Phase 6B.1, and Phase 6B.2 are implemented, validated,
-and merged. Phase 6B.3 logical compaction is implemented and locally validated;
-hosted validation is the current gate before private-v1 release hardening.
+Phases 1-5A, Phase 6A, and Phase 6B.1-6B.3 are implemented and validated.
+Phase 6B.3 logical compaction has passed hosted validation; merging it is the
+current gate before private-v1 release hardening.
 The process default remains exactly seven read tools; the opt-in proposal profile
 adds only three untrusted-candidate tools and cannot change accepted memory.
 The separate opt-in autonomous profile adds only `remember_memory`, writes
