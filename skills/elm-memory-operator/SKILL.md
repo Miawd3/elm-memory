@@ -37,6 +37,8 @@ proposal-only profile may additionally expose `propose_memory`,
 change accepted memory. A separate explicitly configured `autonomous` profile
 exposes the seven read tools plus `remember_memory`; it writes only bounded,
 active-but-unverified `agent_curated` memory for server-allowlisted projects.
+The same tool may expose source-verified compare-and-swap when the operator has
+configured one or more source-root aliases; no ninth maintenance tool exists.
 
 Begin an MCP retrieval with `status`. If `healthy` is false or `sync_required`
 is true, do not assume the index is current and do not try to repair it through
@@ -73,15 +75,33 @@ without trying to bypass the boundary through files, CLI acceptance, or another
 tool. Check `candidate_activated` instead of inferring success from a terminal
 proposal: dispute, supersession, expiry, future dating, manual acceptance,
 rejection, and deferral all return explicit non-active outcomes. Autonomous
-mode exposes no supersession, dispute, deletion, recovery, sync, identity, or
-policy mutation.
+mode exposes no unrestricted supersession, dispute, deletion, recovery, sync,
+identity, policy mutation, or stronger-authority selection.
 
 Treat expiry as reversible retrieval state, not deletion: expired memory is
 hidden from ordinary reads and no longer consumes active quota, while canonical
 history remains inspectable. Renew useful memory with a fresh bounded submission
-after expiry. Do not try to extend, shorten, supersede, or rewrite an existing
-claim in place; source-verified replacement and logical compaction remain later
-maintenance gates.
+after expiry.
+
+For an active claim, use source-verified CAS only when current repository state
+really changed or the same fact needs a fresh bounded lease. First use `history`
+with the exact project/subject/predicate to obtain the sole current
+`agent_curated` claim, its `claim_id`, canonical `content_sha256`, and existing
+`repo://ALIAS/path@sha256:...` locator. Confirm that `status` lists the alias in
+`agent_memory_limits.source_root_aliases`, inspect the actual repository file,
+and compute its current SHA-256. Then call `remember_memory` with a fresh
+submission ID, a later `valid_from`, the bounded successor value/lease, both
+`supersedes_claim_id` and `expected_claim_sha256`, and at least one current
+source ref using the same locator. Never guess a claim ID/hash, switch to an
+unrelated locator, or supply only one CAS precondition.
+
+Treat `verified_at_transition` narrowly: ELM proved that the configured file had
+the referenced bytes during the transition check, not that the agent's semantic
+interpretation is true forever. The successor remains `agent_curated` and the
+old claim remains immutable history. On `stale_cas_deferred` or
+`source_verification_deferred`, re-read current claim and source state; do not
+retry by weakening provenance, changing authority, or bypassing MCP through
+manual CLI ratification. Logical compaction remains a later maintenance gate.
 
 Mutation-capable profiles fail indexed reads closed when canonical governance
 is newer than the disposable projection; freshness verification and the query
