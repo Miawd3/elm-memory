@@ -9,7 +9,9 @@
 
 ## Report a vulnerability
 
-Use [GitHub private vulnerability reporting](https://github.com/Miawd3/elm-memory/security/advisories/new). Do not open a public issue for a vulnerability that could expose private memory or enable unsafe mutation.
+Before publishing the repository, the maintainer must enable GitHub private vulnerability reporting under **Settings → Code security** after changing the repository visibility. GitHub does not expose that reporting endpoint while the repository is private.
+
+Once it is enabled, use [GitHub private vulnerability reporting](https://github.com/Miawd3/elm-memory/security/advisories/new). Do not open a public issue for a vulnerability that could expose private memory or enable unsafe mutation.
 
 Use synthetic data in reports. Never include real credentials, personal chat exports, private memory roots, or third-party data.
 
