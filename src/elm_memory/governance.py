@@ -19,6 +19,7 @@ import uuid
 from .atomic import atomic_create_bytes, atomic_write_bytes
 from .canonical import CanonicalJSONError, canonical_json_bytes, parse_closed_json
 from .locking import WriterLock
+from .tokens import estimate_tokens
 
 
 CANONICAL_FORMAT_VERSION = 1
@@ -85,6 +86,10 @@ REASON_CODES = {
     "user_request",
     "other",
 }
+LOGICAL_COMPACTION_SCHEMA_VERSION = 1
+DEFAULT_COMPACTION_BUDGET = 1_200
+MIN_COMPACTION_BUDGET = 512
+MAX_COMPACTION_BUDGET = 32_768
 
 
 class GovernanceError(RuntimeError):
@@ -3174,6 +3179,422 @@ def contradictions(claims: list[dict]) -> list[dict]:
                 "right_object": right["object"],
             })
     return found
+
+
+def _claim_lineages(
+    claims: list[dict],
+    tombstones: dict[str, dict],
+) -> list[list[dict]]:
+    """Return deterministic linear claim components without changing canon.
+
+    Deleted neighbors are allowed only when their metadata-only tombstones are
+    still present. Any other broken, branching, cross-project, or cyclic link
+    makes a compact view unsafe and therefore fails closed.
+    """
+
+    by_id = {item["claim_id"]: item for item in claims}
+    successors: dict[str, str] = {}
+    predecessors: dict[str, str] = {}
+    for claim_id, claim in by_id.items():
+        previous_id = claim.get("supersedes")
+        next_id = claim.get("superseded_by")
+        if previous_id:
+            previous = by_id.get(previous_id)
+            if previous is None:
+                tombstone = tombstones.get(previous_id)
+                if tombstone is None:
+                    raise GovernanceError(
+                        f"Claim lineage references a missing predecessor: {claim_id} -> {previous_id}"
+                    )
+                if tombstone.get("item_type") != "claim":
+                    raise GovernanceError(
+                        f"Claim lineage predecessor is not a claim tombstone: {previous_id}"
+                    )
+                if tombstone.get("project") != claim["project"]:
+                    raise GovernanceError("Claim lineage cannot cross project boundaries.")
+            else:
+                if previous.get("superseded_by") != claim_id:
+                    raise GovernanceError(
+                        f"Claim lineage has asymmetric predecessor linkage: {previous_id} -> {claim_id}"
+                    )
+                if previous["project"] != claim["project"]:
+                    raise GovernanceError("Claim lineage cannot cross project boundaries.")
+                predecessors[claim_id] = previous_id
+        if next_id:
+            successor = by_id.get(next_id)
+            if successor is None:
+                tombstone = tombstones.get(next_id)
+                if tombstone is None:
+                    raise GovernanceError(
+                        f"Claim lineage references a missing successor: {claim_id} -> {next_id}"
+                    )
+                if tombstone.get("item_type") != "claim":
+                    raise GovernanceError(
+                        f"Claim lineage successor is not a claim tombstone: {next_id}"
+                    )
+                if tombstone.get("project") != claim["project"]:
+                    raise GovernanceError("Claim lineage cannot cross project boundaries.")
+            else:
+                if successor.get("supersedes") != claim_id:
+                    raise GovernanceError(
+                        f"Claim lineage has asymmetric successor linkage: {claim_id} -> {next_id}"
+                    )
+                if successor["project"] != claim["project"]:
+                    raise GovernanceError("Claim lineage cannot cross project boundaries.")
+                if claim_id in successors and successors[claim_id] != next_id:
+                    raise GovernanceError(f"Claim lineage branches at {claim_id}.")
+                successors[claim_id] = next_id
+
+    roots = sorted(claim_id for claim_id in by_id if claim_id not in predecessors)
+    visited: set[str] = set()
+    lineages: list[list[dict]] = []
+    for root_id in roots:
+        component: list[dict] = []
+        current_id: str | None = root_id
+        local: set[str] = set()
+        while current_id is not None:
+            if current_id in local:
+                raise GovernanceError(f"Claim lineage cycle detected at {current_id}.")
+            if current_id in visited:
+                raise GovernanceError(f"Claim lineage converges more than once at {current_id}.")
+            local.add(current_id)
+            visited.add(current_id)
+            component.append(by_id[current_id])
+            current_id = successors.get(current_id)
+        lineages.append(component)
+    if len(visited) != len(by_id):
+        unresolved = sorted(set(by_id) - visited)[0]
+        raise GovernanceError(f"Claim lineage cycle detected at {unresolved}.")
+    return lineages
+
+
+def _claim_effective_status(claim: dict, moment: str) -> str:
+    if claim["status"] != "accepted":
+        return claim["status"]
+    if claim["valid_from"] > moment:
+        return "future"
+    if claim.get("valid_to") and claim["valid_to"] <= moment:
+        return "expired"
+    return "active"
+
+
+def _lineage_digest(lineage: list[dict]) -> str:
+    identity = [
+        {
+            "claim_id": item["claim_id"],
+            "content_sha256": item["content_sha256"],
+            "proposal_id": item["proposal_id"],
+            "status": item["status"],
+            "supersedes": item.get("supersedes"),
+            "superseded_by": item.get("superseded_by"),
+        }
+        for item in lineage
+    ]
+    return hashlib.sha256(canonical_json_bytes(identity)).hexdigest()
+
+
+def _lineage_summary(lineage: list[dict], *, moment: str) -> dict:
+    first = lineage[0]
+    head = lineage[-1]
+    renewals = sum(
+        1 for previous, current in zip(lineage, lineage[1:])
+        if (
+            previous["subject"] == current["subject"]
+            and previous["predicate"] == current["predicate"]
+            and previous["object"] == current["object"]
+        )
+    )
+    replacements = max(0, len(lineage) - 1 - renewals)
+    semantic_keys = {
+        (item["subject"], item["predicate"])
+        for item in lineage
+    }
+    authorities = {item["authority"] for item in lineage}
+    return {
+        "lineage_id": first["claim_id"],
+        "head_claim_id": head["claim_id"],
+        "project": head["project"],
+        "subject": head["subject"],
+        "predicate": head["predicate"],
+        "head_object": head["object"],
+        "head_status": _claim_effective_status(head, moment),
+        "head_authority": head["authority"],
+        "claim_count": len(lineage),
+        "renewal_count": renewals,
+        "replacement_count": replacements,
+        "authority_change_count": sum(
+            1 for previous, current in zip(lineage, lineage[1:])
+            if previous["authority"] != current["authority"]
+        ),
+        "semantic_key_changed": len(semantic_keys) > 1,
+        "first_valid_from": first["valid_from"],
+        "head_valid_from": head["valid_from"],
+        "head_valid_to": head.get("valid_to"),
+        "first_recorded_at": first["recorded_at"],
+        "last_transitioned_at": max(item["transitioned_at"] for item in lineage),
+        "source_ref_count": sum(len(item.get("source_refs", [])) for item in lineage),
+        "evidence_ref_count": sum(len(item.get("evidence_ids", [])) for item in lineage),
+        "canonical_lineage_sha256": _lineage_digest(lineage),
+        "expand": {"history_lineage": first["claim_id"]},
+        "authority_set": sorted(authorities),
+        "predecessor_tombstone_id": (
+            first.get("supersedes") if first.get("supersedes") else None
+        ),
+        "successor_tombstone_id": (
+            head.get("superseded_by") if head.get("superseded_by") else None
+        ),
+    }
+
+
+def _count_values(items: list[dict], field: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        value = str(item.get(field) or "unspecified")
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _json_token_estimate(value: dict) -> int:
+    rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    return estimate_tokens(rendered)
+
+
+def _with_token_estimate(value: dict) -> dict:
+    result = dict(value)
+    estimate = 0
+    for _ in range(4):
+        result["estimated_tokens"] = estimate
+        updated = _json_token_estimate(result)
+        if updated == estimate:
+            break
+        estimate = updated
+    result["estimated_tokens"] = _json_token_estimate(result)
+    return result
+
+
+def logical_compaction_view(
+    root: Path,
+    *,
+    project: str | None,
+    subject: str | None,
+    predicate: str | None,
+    budget_tokens: int = DEFAULT_COMPACTION_BUDGET,
+) -> dict:
+    """Build a bounded, deterministic, derived lineage snapshot.
+
+    This view never writes canonical or derived state. Exact claims, proposals,
+    events, evidence, and tombstones remain available through ``history`` and
+    ``history --lineage``.
+    """
+
+    if (
+        not isinstance(budget_tokens, int)
+        or isinstance(budget_tokens, bool)
+        or not MIN_COMPACTION_BUDGET <= budget_tokens <= MAX_COMPACTION_BUDGET
+    ):
+        raise GovernanceError(
+            "compaction budget must be an integer between "
+            f"{MIN_COMPACTION_BUDGET} and {MAX_COMPACTION_BUDGET}."
+        )
+    normalized_project = _project(project) if project else None
+    proposals, evidence, events, tombstones = load_governance(root)
+    claims = list(_load_claims(root).values())
+    all_lineages = _claim_lineages(claims, tombstones)
+    selected: list[list[dict]] = []
+    for lineage in all_lineages:
+        if normalized_project and not any(
+            item["project"] == normalized_project for item in lineage
+        ):
+            continue
+        if subject and not any(item["subject"] == subject for item in lineage):
+            continue
+        if predicate and not any(item["predicate"] == predicate for item in lineage):
+            continue
+        selected.append(lineage)
+
+    moment = utc_now()
+    summaries = [_lineage_summary(lineage, moment=moment) for lineage in selected]
+    status_rank = {"active": 0, "future": 1, "expired": 2, "disputed": 3, "superseded": 4}
+    summaries.sort(key=lambda item: (
+        status_rank.get(item["head_status"], 99),
+        item["project"],
+        item["subject"],
+        item["predicate"],
+        item["lineage_id"],
+    ))
+    claim_ids = {item["claim_id"] for lineage in selected for item in lineage}
+    proposal_ids = {item["proposal_id"] for lineage in selected for item in lineage}
+    tombstone_anchor_ids = {
+        anchor_id
+        for lineage in selected
+        for anchor_id in (lineage[0].get("supersedes"), lineage[-1].get("superseded_by"))
+        if anchor_id
+    }
+    statuses = proposal_statuses(proposals, events, tombstones)
+    proposal_rows = [
+        {**record, "status": statuses[proposal_id]}
+        for proposal_id, record in proposals.items()
+        if proposal_id in proposal_ids
+    ]
+    event_rows = [
+        record for record in events.values()
+        if record.get("proposal_id") in proposal_ids
+        or record.get("claim_id") in claim_ids
+        or record.get("claim_id") in tombstone_anchor_ids
+        or record.get("previous_claim_id") in claim_ids
+        or record.get("previous_claim_id") in tombstone_anchor_ids
+        or record.get("target_id") in claim_ids
+        or record.get("target_id") in tombstone_anchor_ids
+    ]
+    evidence_ids = {
+        evidence_id
+        for lineage in selected
+        for item in lineage
+        for evidence_id in item.get("evidence_ids", [])
+    }
+    related_tombstones = [
+        item for item_id, item in tombstones.items()
+        if item_id in claim_ids
+        or item_id in proposal_ids
+        or item_id in evidence_ids
+        or item_id in tombstone_anchor_ids
+    ]
+    aggregate = {
+        "claim_count": len(claim_ids),
+        "proposal_count": len(proposal_rows),
+        "proposal_status_counts": _count_values(proposal_rows, "status"),
+        "event_count": len(event_rows),
+        "event_action_counts": _count_values(event_rows, "action"),
+        "evidence_count": sum(1 for evidence_id in evidence_ids if evidence_id in evidence),
+        "tombstone_count": len(related_tombstones),
+        "contradiction_count": len(contradictions([
+            item for lineage in selected for item in lineage
+        ])),
+    }
+    base = {
+        "schema_version": LOGICAL_COMPACTION_SCHEMA_VERSION,
+        "view": "logical_compaction",
+        "content_role": "derived_untrusted_memory_manifest",
+        "authority_warning": (
+            "This is a deterministic derived snapshot, not a canonical rewrite or a semantic summary."
+        ),
+        "project": normalized_project,
+        "subject": subject,
+        "predicate": predicate,
+        "budget_tokens": budget_tokens,
+        "lineage_count": len(summaries),
+        "lineage_count_returned": 0,
+        "omitted_lineage_count": len(summaries),
+        "truncated": bool(summaries),
+        "aggregate": aggregate,
+        "lineages": [],
+    }
+    measured = _with_token_estimate(base)
+    if measured["estimated_tokens"] > budget_tokens:
+        raise GovernanceError(
+            "compaction budget is too small for the requested aggregate; narrow the history scope."
+        )
+    returned: list[dict] = []
+    for summary in summaries:
+        candidate = {
+            **base,
+            "lineage_count_returned": len(returned) + 1,
+            "omitted_lineage_count": len(summaries) - len(returned) - 1,
+            "truncated": len(returned) + 1 < len(summaries),
+            "lineages": [*returned, summary],
+        }
+        measured = _with_token_estimate(candidate)
+        if measured["estimated_tokens"] > budget_tokens:
+            break
+        returned.append(summary)
+    result = {
+        **base,
+        "lineage_count_returned": len(returned),
+        "omitted_lineage_count": len(summaries) - len(returned),
+        "truncated": len(returned) < len(summaries),
+        "lineages": returned,
+    }
+    result = _with_token_estimate(result)
+    if result["estimated_tokens"] > budget_tokens:
+        raise GovernanceError("logical compaction exceeded its deterministic token budget.")
+    return result
+
+
+def lineage_history_view(
+    root: Path,
+    *,
+    lineage_claim_id: str,
+    project: str | None,
+    include_deleted: bool,
+) -> dict:
+    """Expand exactly one canonical lineage selected by any member claim ID."""
+
+    requested_id = validate_id(lineage_claim_id, "claim")
+    proposals, evidence, events, tombstones = load_governance(root)
+    claims = list(_load_claims(root).values())
+    lineages = _claim_lineages(claims, tombstones)
+    selected = next(
+        (lineage for lineage in lineages if any(item["claim_id"] == requested_id for item in lineage)),
+        None,
+    )
+    if selected is None:
+        raise GovernanceError(f"Claim lineage not found: {requested_id}")
+    lineage_project = selected[0]["project"]
+    if project and _project(project) != lineage_project:
+        raise GovernanceError("Claim lineage is outside the requested project scope.")
+    claim_ids = {item["claim_id"] for item in selected}
+    proposal_ids = {item["proposal_id"] for item in selected}
+    tombstone_anchor_ids = {
+        anchor_id
+        for anchor_id in (selected[0].get("supersedes"), selected[-1].get("superseded_by"))
+        if anchor_id
+    }
+    statuses = proposal_statuses(proposals, events, tombstones)
+    proposal_rows = [
+        {**record, "status": statuses[proposal_id]}
+        for proposal_id, record in proposals.items()
+        if proposal_id in proposal_ids
+    ]
+    event_rows = [
+        record for record in events.values()
+        if record.get("proposal_id") in proposal_ids
+        or record.get("claim_id") in claim_ids
+        or record.get("claim_id") in tombstone_anchor_ids
+        or record.get("previous_claim_id") in claim_ids
+        or record.get("previous_claim_id") in tombstone_anchor_ids
+        or record.get("target_id") in claim_ids
+        or record.get("target_id") in tombstone_anchor_ids
+    ]
+    evidence_ids = {
+        evidence_id
+        for item in selected
+        for evidence_id in item.get("evidence_ids", [])
+    }
+    related_ids = claim_ids | proposal_ids | evidence_ids | {
+        item["event_id"] for item in event_rows
+    }
+    related_ids.update(tombstone_anchor_ids)
+    return {
+        "project": lineage_project,
+        "lineage_id": selected[0]["claim_id"],
+        "requested_claim_id": requested_id,
+        "claims": sorted(selected, key=lambda item: (item["recorded_at"], item["claim_id"])),
+        "proposals": sorted(
+            proposal_rows,
+            key=lambda item: (item.get("proposed_at", ""), item["proposal_id"]),
+        ),
+        "events": sorted(
+            event_rows,
+            key=lambda item: (item.get("occurred_at", ""), item["event_id"]),
+        ),
+        "contradictions": contradictions(selected),
+        "evidence_count": sum(1 for evidence_id in evidence_ids if evidence_id in evidence),
+        "tombstones": sorted(
+            (item for item_id, item in tombstones.items() if item_id in related_ids),
+            key=lambda item: item.get("deleted_at", ""),
+        ) if include_deleted else [],
+        "logical_compaction": _lineage_summary(selected, moment=utc_now()),
+    }
 
 
 def history_view(

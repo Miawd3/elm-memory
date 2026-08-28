@@ -352,6 +352,14 @@ then atomically supersedes the old `agent_curated` claim with another
 authority. These CAS requests use proposal-v4 so the target ID, expected claim
 hash, source digest, replacement value, and effective lease are replay-bound.
 
+Phase 6B.3 keeps that canonical audit trail intact while making long maintenance
+history cheaper to inspect. `elm history --compact --budget 1200` returns a
+deterministic token-bounded lineage manifest with explicit truncation metadata;
+`elm history --lineage CLAIM_ID` expands one selected lineage back to its exact
+claims, proposals, events, and evidence metadata. The same optional modes are
+available on the existing MCP `history` tool. They create no summary claim, no
+new authority, no canonical rewrite, and no additional MCP tool.
+
 Search and exact reads expose governed claim identity, raw authority, a
 normalized authority label, and the `untrusted_memory_data` role. In
 proposal-only and autonomous profiles, indexed reads fail closed if canonical
@@ -472,9 +480,9 @@ Phase order:
 4. read-only MCP and heterogeneous-host validation;
 5. Phase 5A: opt-in proposal-only MCP with no accepted-state tool (implemented);
 6. Phase 6A: opt-in bounded autonomous `agent_curated` memory (implemented);
-7. Phase 6B.1: deterministic validity leases (implemented and locally validated);
-8. Phase 6B.2: source-verified CAS supersession and active-lease renewal (implemented and locally validated);
-9. Phase 6B.3: logical compaction;
+7. Phase 6B.1: deterministic validity leases (implemented and validated);
+8. Phase 6B.2: source-verified CAS supersession and active-lease renewal (implemented and validated);
+9. Phase 6B.3: bounded logical lineage compaction with exact expansion (implemented and validated);
 10. optional semantic retrieval only after measured deterministic failures.
 
 ## License, privacy, and publication status

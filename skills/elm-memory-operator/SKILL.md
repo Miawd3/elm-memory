@@ -101,7 +101,18 @@ interpretation is true forever. The successor remains `agent_curated` and the
 old claim remains immutable history. On `stale_cas_deferred` or
 `source_verification_deferred`, re-read current claim and source state; do not
 retry by weakening provenance, changing authority, or bypassing MCP through
-manual CLI ratification. Logical compaction remains a later maintenance gate.
+manual CLI ratification.
+
+For broad maintenance inspection or a long supersession/renewal chain, request
+`history` with `compact: true` and a bounded `budget_tokens` value before loading
+exact history. The result is a deterministic derived lineage manifest, not a
+model summary or canonical rewrite. Respect `truncated` and
+`omitted_lineage_count`; do not infer omitted state. Expand a selected manifest
+with a second `history` call whose `lineage_claim_id` is the stable claim ID in
+`expand.history_lineage`. Exact expansion returns the canonical claims,
+proposals, events, evidence count, and optional tombstones for that lineage.
+Never describe logical compaction as deletion, archival, authority promotion,
+or proof that the head object's semantics are correct.
 
 Mutation-capable profiles fail indexed reads closed when canonical governance
 is newer than the disposable projection; freshness verification and the query
