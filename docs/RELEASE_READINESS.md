@@ -16,7 +16,7 @@ The active development line reflects completed, validated capabilities through P
 - **Windows baseline (Python 3.14.3)**:
   - Source bytecode compilation passed cleanly:
     `python -m compileall -q src tests benchmarks scripts`
-  - Full test suite passed (249/249 tests across 20 test modules):
+  - Full test suite passed (251/251 tests across 20 test modules):
     `python -m unittest discover -s tests -v`
   - Sanitized deterministic retrieval benchmark passed (50/50 cases with zero leakage):
     `python benchmarks/run_benchmark.py --assert-pass`
@@ -60,7 +60,15 @@ The active development line reflects completed, validated capabilities through P
 
 ### Private-v1 Blockers (Active Release-Hardening Gate)
 
-1. **Evaluation Provenance Confinement**: In real-task Gemini / Antigravity evaluations, restrict agent tool exposure or prompt instructions to prevent unapproved built-in file inspection (`view_file`, `list_dir`) from tripping the zero-tolerance provenance gate (`non_mcp_tool_call_count == 0`), without relaxing trust or expanding the allowlist.
+1. **Antigravity Evaluation Confinement**: Antigravity CLI 1.1.22 exposes no
+   verified tool-schema pruning equivalent to the Codex/Claude routes. A
+   2026-08-28 isolated recheck found that broad read or command denials also
+   block workspace MCP discovery or local MCP startup; the documented exact
+   allowlist produced no MCP trace in that host snapshot. Prompt tool binding is
+   hardened, but it is defense in depth only. Keep the route non-claim-capable
+   until a future host mechanism or streamed rerun proves an exact MCP-only
+   trace with `non_mcp_tool_call_count == 0`; do not expand the allowlist or
+   weaken the gate.
 2. **External Hosted CI Rerun**: Re-trigger hosted CI once GitHub spending limits are refreshed.
 
 ### Public-Release Blockers (Deferred to Eventual Public Tag)

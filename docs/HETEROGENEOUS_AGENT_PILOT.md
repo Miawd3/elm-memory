@@ -116,6 +116,14 @@ bypass. The permission is unnecessary for
 the full-corpus and no-memory conditions. The harness does not edit host
 settings or perform login; those remain operator-controlled actions.
 
+Antigravity permissions are execution gates, not tool-schema pruning. The ELM
+prompt names the MCP `read` tool explicitly and forbids built-in file or shell
+tools as defense in depth, but prompt compliance is never treated as the
+security boundary. The streamed zero-tolerance provenance audit remains the
+authoritative per-run gate. See the current Antigravity documentation for
+[fine-grained permissions](https://antigravity.google/docs/cli/permissions) and
+[workspace MCP configuration](https://antigravity.google/docs/mcp).
+
 ## First observation
 
 The strict paired Codex storage-case run passed quality, complete telemetry,
@@ -143,6 +151,23 @@ the coding-agent scaffold. ELM's expected advantage is bounded retrieval as
 history grows. That scaling claim remains unproven until a corpus-size curve
 uses repeated, counterbalanced runs at sizes where full-corpus injection becomes
 materially expensive or impossible.
+
+### Antigravity 1.1.22 confinement recheck — 2026-08-28
+
+An isolated Debian recheck preserved the exact MCP allowlist, synthetic corpus,
+provider counters, canonical-Markdown hashes, and zero-tolerance audit. It also
+tested host-enforced read and command denials with byte-for-byte settings backup
+and restoration. The denials blocked workspace MCP discovery or local MCP
+startup; with the documented allowlist and explicit trusted disposable parent,
+Antigravity returned no MCP calls. Those cells therefore failed closed and are
+not efficiency evidence.
+
+The prompt now binds section expansion explicitly to the ELM `read` tool and
+forbids built-in file or shell tools. That removes an ambiguous cue but does not
+certify the route. Gemini-through-Antigravity remains non-claim-capable until a
+host version provides enforceable tool-schema confinement or a fresh streamed
+run demonstrates the exact MCP-only trace without relying on broader host
+permissions. The audit rule and allowlist were not relaxed.
 
 ## Next evidence step
 

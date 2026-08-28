@@ -41,6 +41,8 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
 
         self.assertIn("project='lighthouse'", prompt)
         self.assertNotIn("project='orion'", prompt)
+        self.assertIn("ELM read tool with the selected section_key", prompt)
+        self.assertIn("Do not use built-in file or shell tools", prompt)
 
     def test_case_project_rejects_prompt_shaped_slugs(self) -> None:
         case = dict(PILOT.load_cases()[0], project="orion' inject=true")
@@ -266,6 +268,59 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
         self.assertTrue(PILOT.tool_audit_passes("no_memory", agy_audit))
         self.assertFalse(PILOT.tool_audit_passes("no_memory", claude_audit))
 
+    def test_antigravity_run_adds_only_the_isolated_mcp_workspace(self) -> None:
+        captured = {}
+        original_which = PILOT.shutil.which
+        original_run_process = PILOT.run_process
+
+        def fake_run_process(command, **kwargs):
+            captured["command"] = command
+            return PILOT.subprocess.CompletedProcess(
+                args=command,
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "event": "result",
+                        "result": {
+                            "structured_output": {
+                                "answer": PILOT.INSUFFICIENT,
+                                "source_path": None,
+                                "section_key": None,
+                                "evidence_status": "insufficient",
+                            },
+                            "usage": {
+                                "input_tokens": 10,
+                                "output_tokens": 2,
+                                "total_tokens": 12,
+                            },
+                        },
+                    }
+                ),
+                stderr="",
+            )
+
+        try:
+            PILOT.shutil.which = lambda name: "agy" if name == "agy" else None
+            PILOT.run_process = fake_run_process
+            with PILOT.disposable_directory("elm-antigravity-command-test-") as workspace:
+                status, _, _, _, _ = PILOT.run_antigravity(
+                    route="gemini-antigravity",
+                    workspace=workspace,
+                    root=workspace,
+                    runtime=workspace,
+                    prompt="prompt",
+                    condition="no_memory",
+                    model="gemini-test",
+                    timeout=5.0,
+                )
+        finally:
+            PILOT.shutil.which = original_which
+            PILOT.run_process = original_run_process
+
+        self.assertEqual("completed", status)
+        add_dir_index = captured["command"].index("--add-dir") + 1
+        self.assertEqual(str(workspace), captured["command"][add_dir_index])
+
     def test_usage_requires_exact_integers_and_route_complete_counters(self) -> None:
         usage = PILOT.sanitized_usage(
             "provider",
@@ -342,6 +397,22 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
         self.assertTrue(PILOT.tool_audit_passes("elm", audit))
         self.assertEqual(1, audit["broker_internal_read_count"])
         self.assertEqual([], audit["unapproved_tool_names"])
+
+    def test_antigravity_file_tools_remain_fail_closed(self) -> None:
+        for tool_name in ("list_dir", "view_file"):
+            with self.subTest(tool_name=tool_name):
+                audit = PILOT.empty_tool_audit("reported")
+                audit.update(
+                    {
+                        "tool_call_count": 3,
+                        "mcp_tool_call_count": 2,
+                        "non_mcp_tool_call_count": 1,
+                        "elm_tools": ["status", "context"],
+                        "unapproved_tool_names": [tool_name],
+                    }
+                )
+
+                self.assertFalse(PILOT.tool_audit_passes("elm", audit))
 
     def test_legacy_provider_errors_collapse_to_bounded_categories(self) -> None:
         raw = "conversation_id=secret Individual quota reached"

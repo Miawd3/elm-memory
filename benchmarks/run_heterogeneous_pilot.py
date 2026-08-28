@@ -259,8 +259,9 @@ def build_prompt(case: dict[str, str], condition: str, corpus: str) -> str:
     if condition == "elm":
         return common + (
             "Evidence condition: ELM. Use only the ELM MCP tools. First call status. If healthy, "
-            f"call context with project={project!r}, budget=700, and the question as the task. Read the "
-            "selected exact section when needed. Set evidence_status='retrieved', source_path to "
+            f"call context with project={project!r}, budget=700, and the question as the task. Call "
+            "the ELM read tool with the selected section_key when needed. Do not use built-in file "
+            "or shell tools. Set evidence_status='retrieved', source_path to "
             "the retrieved relative Markdown path, and section_key to the retrieved stable section "
             f"key. If evidence cannot be recovered, answer {INSUFFICIENT!r} with null source fields "
             "and evidence_status='insufficient'."
