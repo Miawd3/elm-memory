@@ -304,7 +304,8 @@ The full threat model and contract are in
 
 ## Opt-in autonomous memory
 
-Phase 6A removes per-item human approval from the normal AI-memory loop. An
+Phase 6A removes per-item human approval from the normal AI-memory loop. Phase
+6B.1 adds bounded validity leases without adding another tool. An
 operator enables one bounded profile for explicit projects; agents may then call
 `remember_memory` without interrupting the user. The tool creates active
 canonical memory with authority `agent_curated`, which retrieval labels
@@ -316,7 +317,9 @@ elm-mcp --root /path/to/memory \
   --mutation-mode autonomous \
   --allow-project orion \
   --max-active-per-project 512 \
-  --max-active-root 4096
+  --max-active-root 4096 \
+  --default-ttl-days 90 \
+  --max-ttl-days 365
 ```
 
 The autonomous surface is exactly the seven read tools plus
@@ -330,6 +333,14 @@ instead of overwriting it; exhausted quotas also defer the candidate. Only
 `normal` sensitivity and reference-only evidence are accepted. Human inspection
 remains available through canonical Markdown and `history`, but is not a write
 prerequisite.
+
+New autonomous submissions use proposal-v3 and bind an effective `valid_to`
+timestamp into their immutable digest. `remember_memory` may supply that value
+explicitly within the server maximum; otherwise ELM derives it deterministically
+from `valid_from` and the standing default TTL. Expired claims disappear from
+ordinary retrieval and stop consuming active quota without a background writer,
+while canonical history remains intact. Renewal is a new bounded submission;
+Phase 6B.1 still cannot supersede or edit an existing claim in place.
 
 Search and exact reads expose governed claim identity, raw authority, a
 normalized authority label, and the `untrusted_memory_data` role. In
@@ -345,8 +356,9 @@ future epoch protocol may recover mutation-profile read concurrency without
 reopening the freshness race.
 
 The product decision, authority ordering, lifecycle, limits, failure behavior,
-and Phase 6B maintenance boundary are documented in
-[docs/PHASE_6_AUTONOMOUS_MEMORY.md](docs/PHASE_6_AUTONOMOUS_MEMORY.md). The
+and maintenance boundary are documented in
+[docs/PHASE_6_AUTONOMOUS_MEMORY.md](docs/PHASE_6_AUTONOMOUS_MEMORY.md) and
+[docs/PHASE_6B_AUTONOMOUS_MAINTENANCE.md](docs/PHASE_6B_AUTONOMOUS_MAINTENANCE.md). The
 former Phase 5B signed per-operation approval design is retained only as
 historical security research and is not on the active roadmap.
 
@@ -449,9 +461,10 @@ Phase order:
 3. governed proposals, evidence references, claims, and temporal history;
 4. read-only MCP and heterogeneous-host validation;
 5. Phase 5A: opt-in proposal-only MCP with no accepted-state tool (implemented);
-6. Phase 6A: opt-in bounded autonomous `agent_curated` memory (implemented locally);
-7. Phase 6B: autonomous conflict, expiry, supersession, and compaction policy;
-8. optional semantic retrieval only after measured deterministic failures.
+6. Phase 6A: opt-in bounded autonomous `agent_curated` memory (implemented);
+7. Phase 6B.1: deterministic validity leases and renewal (implemented and locally validated);
+8. Phase 6B.2/6B.3: source-verified supersession and logical compaction;
+9. optional semantic retrieval only after measured deterministic failures.
 
 ## License, privacy, and publication status
 

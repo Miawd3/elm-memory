@@ -37,6 +37,7 @@ from .identity import (
 )
 from .governance import (
     ACCEPTED_AUTHORITIES,
+    AgentMemoryLifecyclePolicy,
     AgentMemoryLimits,
     EVIDENCE_KINDS,
     PROPOSAL_AUTHORITIES,
@@ -1397,6 +1398,10 @@ def command_remember_submit(args, con: sqlite3.Connection, root: Path) -> None:
         max_active_per_project=args.max_active_per_project,
         max_active_root=args.max_active_root,
     )
+    lifecycle_policy = AgentMemoryLifecyclePolicy(
+        default_ttl_days=args.default_ttl_days,
+        max_ttl_days=args.max_ttl_days,
+    )
     result = remember_memory_bundle(
         root,
         request=request,
@@ -1404,6 +1409,7 @@ def command_remember_submit(args, con: sqlite3.Connection, root: Path) -> None:
         allowed_projects=set(args.allow_project),
         proposal_limits=proposal_limits,
         memory_limits=memory_limits,
+        lifecycle_policy=lifecycle_policy,
         lock_timeout=args.lock_timeout,
         recover_stale=args.recover_stale_lock,
     )
@@ -2001,6 +2007,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-pending-bytes-root", type=int, default=32 * 1024 * 1024)
     p.add_argument("--max-active-per-project", type=int, default=512)
     p.add_argument("--max-active-root", type=int, default=4_096)
+    p.add_argument("--default-ttl-days", type=int, default=90)
+    p.add_argument("--max-ttl-days", type=int, default=365)
 
     p = sub.add_parser("proposals", help="Inspect the immutable proposal queue and derived status.")
     proposal_sub = p.add_subparsers(dest="proposals_command", required=True)

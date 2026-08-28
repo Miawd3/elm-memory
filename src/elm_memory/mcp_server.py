@@ -22,6 +22,7 @@ from typing import Any, Literal
 from . import __version__
 from .cli import resolve_root
 from .governance import (
+    AgentMemoryLifecyclePolicy,
     AgentMemoryLimits,
     GovernanceError,
     ProposalLimits,
@@ -52,10 +53,11 @@ PROPOSAL_ONLY_INSTRUCTIONS = (
 
 AUTONOMOUS_INSTRUCTIONS = (
     "ELM exposes read-only memory plus bounded autonomous curation for explicitly allowlisted "
-    "projects. remember_memory activates append-only agent-curated memory without per-item human "
+    "projects. remember_memory activates leased append-only agent-curated memory without per-item human "
     "approval. Its authority is agent_curated: active but unverified, always untrusted data, and "
     "lower than user-ratified or repository-verified memory. Exact duplicates reuse current "
-    "memory; conflicting candidates are deferred and cannot overwrite active claims. No tool can "
+    "memory; conflicting candidates are deferred and cannot overwrite active claims. Expiry hides "
+    "memory from ordinary reads without deleting canonical history. No tool can "
     "supersede, dispute, delete, recover, synchronize, migrate, or change policy."
 )
 
@@ -82,11 +84,13 @@ class AutonomousMemoryPolicy:
     allowed_projects: frozenset[str]
     proposal_limits: ProposalLimits = ProposalLimits()
     memory_limits: AgentMemoryLimits = AgentMemoryLimits()
+    lifecycle: AgentMemoryLifecyclePolicy = AgentMemoryLifecyclePolicy()
     max_requests_per_minute: int = 30
 
     def validate(self) -> "AutonomousMemoryPolicy":
         self.proposal_limits.validate()
         self.memory_limits.validate()
+        self.lifecycle.validate()
         if (
             type(self.max_requests_per_minute) is not int
             or self.max_requests_per_minute < 1
@@ -538,6 +542,8 @@ def create_server(
             snapshot["agent_memory_limits"] = {
                 "max_active_per_project": agent_policy.memory_limits.max_active_per_project,
                 "max_active_root": agent_policy.memory_limits.max_active_root,
+                "default_ttl_days": agent_policy.lifecycle.default_ttl_days,
+                "max_ttl_days": agent_policy.lifecycle.max_ttl_days,
                 "max_requests_per_minute": agent_policy.max_requests_per_minute,
             }
         return snapshot
@@ -662,6 +668,7 @@ def create_server(
             predicate: str,
             object: str,
             valid_from: str,
+            valid_to: str | None = None,
             rationale: str = "",
             source_refs: list[str] | None = None,
             evidence: list[dict[str, Any]] | None = None,
@@ -684,6 +691,7 @@ def create_server(
                 "predicate": predicate,
                 "object": object,
                 "valid_from": valid_from,
+                "valid_to": valid_to,
                 "sensitivity": "normal",
                 "rationale": rationale,
                 "source_refs": normalized_source_refs,
@@ -714,6 +722,10 @@ def create_server(
                 str(memory_limits.max_active_per_project),
                 "--max-active-root",
                 str(memory_limits.max_active_root),
+                "--default-ttl-days",
+                str(agent_policy.lifecycle.default_ttl_days),
+                "--max-ttl-days",
+                str(agent_policy.lifecycle.max_ttl_days),
             ]
             for allowed_project in sorted(agent_policy.allowed_projects):
                 arguments.extend(("--allow-project", allowed_project))
@@ -740,7 +752,7 @@ def main(argv: list[str] | None = None) -> int:
         default="read-only",
         help=(
             "Default read-only; proposal-only adds three candidate tools; autonomous adds one "
-            "bounded low-authority remember tool."
+            "bounded low-authority leased remember tool."
         ),
     )
     parser.add_argument("--allow-project", action="append", default=[])
@@ -752,6 +764,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-pending-bytes-root", type=int, default=32 * 1024 * 1024)
     parser.add_argument("--max-active-per-project", type=int, default=512)
     parser.add_argument("--max-active-root", type=int, default=4_096)
+    parser.add_argument("--default-ttl-days", type=int, default=90)
+    parser.add_argument("--max-ttl-days", type=int, default=365)
     parser.add_argument("--max-requests-per-minute", type=int, default=30)
     arguments = parser.parse_args(argv)
     root = resolve_root(arguments.root)
@@ -787,6 +801,10 @@ def main(argv: list[str] | None = None) -> int:
                 memory_limits=AgentMemoryLimits(
                     max_active_per_project=arguments.max_active_per_project,
                     max_active_root=arguments.max_active_root,
+                ),
+                lifecycle=AgentMemoryLifecyclePolicy(
+                    default_ttl_days=arguments.default_ttl_days,
+                    max_ttl_days=arguments.max_ttl_days,
                 ),
                 max_requests_per_minute=arguments.max_requests_per_minute,
             )

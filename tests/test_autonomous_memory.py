@@ -15,6 +15,7 @@ except ModuleNotFoundError:  # The MCP adapter is an optional installation extra
     Client = None
 
 from elm_memory.governance import (
+    AgentMemoryLifecyclePolicy,
     AgentMemoryLimits,
     ProposalLimits,
     parse_claim,
@@ -43,19 +44,24 @@ def request(
     *,
     submission_id: str = "submission_11111111-1111-4111-8111-111111111111",
     object_value: str = "PostgreSQL 18",
+    valid_from: str = "2026-08-27T00:00:00Z",
+    valid_to: str | None = None,
 ) -> dict:
-    return {
+    value = {
         "submission_id": submission_id,
         "project": "orion",
         "subject": "Aurora",
         "predicate": "uses",
         "object": object_value,
-        "valid_from": "2026-08-27T00:00:00Z",
+        "valid_from": valid_from,
         "sensitivity": "normal",
         "rationale": "Durable agent observation with bounded provenance.",
         "source_refs": [],
         "evidence": [],
     }
+    if valid_to is not None:
+        value["valid_to"] = valid_to
+    return value
 
 
 def remember_cli(root: Path, value: dict, *extra: str):
@@ -691,6 +697,170 @@ class AutonomousMemoryCLITests(unittest.TestCase):
         self.assertEqual(0, doctor["issue_count"])
 
 
+    def test_default_validity_lease_is_digest_bound_and_rebuildable(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            remembered = json.loads(remember_cli(root, request()).stdout)
+            changed_replay = remember_cli(
+                root,
+                request(valid_to="2026-12-01T00:00:00Z"),
+            )
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+            rebuilt = run_cli(root, "rebuild")
+            after = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+        self.assertEqual("2026-11-25T00:00:00.000000+00:00", remembered["valid_to"])
+        self.assertEqual(2, changed_replay.returncode)
+        self.assertIn("different normalized payload", changed_replay.stderr)
+        self.assertEqual(3, history["proposals"][0]["format_version"])
+        self.assertEqual(remembered["valid_to"], history["proposals"][0]["valid_to"])
+        self.assertEqual(remembered["valid_to"], history["claims"][0]["valid_to"])
+        self.assertEqual([], rebuilt["errors"])
+        self.assertEqual(remembered["valid_to"], after["claims"][0]["valid_to"])
+
+    def test_tampered_v3_validity_fails_closed(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            remembered = json.loads(remember_cli(root, request()).stdout)
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+            proposal = history["proposals"][0]
+            path = root / proposal["path"]
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw["valid_to"] = "2026-12-01T00:00:00.000000+00:00"
+            path.write_text(
+                json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            refused = run_cli_process(
+                root,
+                "history",
+                "--project",
+                "orion",
+                "--no-sync",
+            )
+
+        self.assertTrue(remembered["candidate_activated"])
+        self.assertEqual(2, refused.returncode)
+        self.assertIn("Proposal-v3 payload digest mismatch", refused.stderr)
+
+    def test_explicit_validity_is_bounded_before_canonical_mutation(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            accepted = json.loads(remember_cli(
+                root,
+                request(valid_to="2026-08-29T00:00:00Z"),
+            ).stdout)
+
+        self.assertEqual("2026-08-29T00:00:00.000000+00:00", accepted["valid_to"])
+
+        with FixtureCopy() as root:
+            initialize(root)
+            refused = remember_cli(
+                root,
+                request(valid_to="2027-08-28T00:00:00Z"),
+            )
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+        self.assertEqual(2, refused.returncode)
+        self.assertIn("validity cannot exceed 365 days", refused.stderr)
+        self.assertEqual([], history["proposals"])
+        self.assertEqual([], history["claims"])
+
+    def test_invalid_or_overflowing_validity_fails_before_canonical_mutation(self) -> None:
+        invalid_values = (
+            request(valid_to=""),
+            request(valid_from="9999-12-31T00:00:00Z"),
+        )
+        expected_errors = (
+            "valid_to must be a non-empty timezone-aware JSON string or null",
+            "default agent-memory validity exceeds the ISO-8601 timestamp range",
+        )
+        for value, expected_error in zip(invalid_values, expected_errors, strict=True):
+            with self.subTest(expected_error=expected_error), FixtureCopy() as root:
+                initialize(root)
+                refused = remember_cli(root, value)
+                history = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+            self.assertEqual(2, refused.returncode)
+            self.assertIn(expected_error, refused.stderr)
+            self.assertEqual([], history["proposals"])
+            self.assertEqual([], history["claims"])
+
+    def test_already_expired_candidate_defers_and_replays_stably(self) -> None:
+        value = request(valid_to="2026-08-27T00:01:00Z")
+        with FixtureCopy() as root:
+            initialize(root)
+            first = json.loads(remember_cli(root, value).stdout)
+            replay = json.loads(remember_cli(root, value).stdout)
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+        self.assertEqual("expired_deferred", first["action"])
+        self.assertFalse(first["candidate_activated"])
+        self.assertEqual("expired_deferred", replay["action"])
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual([], history["claims"])
+        self.assertEqual(["deferred"], [item["status"] for item in history["proposals"]])
+
+    def test_expired_lease_frees_quota_and_allows_same_key_renewal(self) -> None:
+        limits = AgentMemoryLimits(max_active_per_project=1, max_active_root=1)
+        lifecycle = AgentMemoryLifecyclePolicy(default_ttl_days=1, max_ttl_days=7)
+        first_request = request(valid_to="2026-08-27T00:30:00Z")
+        renewed_request = request(
+            submission_id="submission_22222222-2222-4222-8222-222222222222",
+            valid_from="2026-08-27T01:00:00Z",
+            valid_to="2026-08-27T02:00:00Z",
+        )
+        with FixtureCopy() as root:
+            initialize(root)
+            with patch(
+                "elm_memory.governance.utc_now",
+                return_value="2026-08-27T00:00:00.000000+00:00",
+            ):
+                first = remember_memory_bundle(
+                    root,
+                    request=first_request,
+                    request_bytes=len(json.dumps(first_request).encode("utf-8")),
+                    allowed_projects={"orion"},
+                    proposal_limits=ProposalLimits(),
+                    memory_limits=limits,
+                    lifecycle_policy=lifecycle,
+                    lock_timeout=10.0,
+                    recover_stale=False,
+                )
+            with patch(
+                "elm_memory.governance.utc_now",
+                return_value="2026-08-27T01:00:00.000000+00:00",
+            ):
+                renewed = remember_memory_bundle(
+                    root,
+                    request=renewed_request,
+                    request_bytes=len(json.dumps(renewed_request).encode("utf-8")),
+                    allowed_projects={"orion"},
+                    proposal_limits=ProposalLimits(),
+                    memory_limits=limits,
+                    lifecycle_policy=lifecycle,
+                    lock_timeout=10.0,
+                    recover_stale=False,
+                )
+            run_cli(root, "sync")
+            ordinary = run_cli(
+                root,
+                "search",
+                "Aurora PostgreSQL 18",
+                "--project",
+                "orion",
+                "--no-sync",
+            )
+            history = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+        self.assertTrue(first["candidate_activated"])
+        self.assertTrue(renewed["candidate_activated"])
+        self.assertNotEqual(first["claim_id"], renewed["claim_id"])
+        self.assertFalse(renewed.get("quota_exceeded", False))
+        self.assertEqual(0, ordinary["count"])
+        self.assertEqual(2, len(history["claims"]))
+
+
 @unittest.skipUnless(Client is not None, "install elm-memory[mcp] to run MCP tests")
 class AutonomousMemoryMCPTests(unittest.TestCase):
     def test_exact_eight_tool_surface_remembers_without_human_gate(self) -> None:
@@ -733,9 +903,15 @@ class AutonomousMemoryMCPTests(unittest.TestCase):
         self.assertFalse(remembered.is_error)
         self.assertTrue(remembered.structured_content["candidate_activated"])
         self.assertEqual("agent_curated", remembered.structured_content["authority"])
+        self.assertEqual(
+            "2026-11-25T00:00:00.000000+00:00",
+            remembered.structured_content["valid_to"],
+        )
         self.assertEqual("autonomous", status.structured_content["mutation_mode"])
         self.assertTrue(status.structured_content["active_agent_memory_write_available"])
         self.assertTrue(status.structured_content["accepted_state_mutation_available"])
+        self.assertEqual(90, status.structured_content["agent_memory_limits"]["default_ttl_days"])
+        self.assertEqual(365, status.structured_content["agent_memory_limits"]["max_ttl_days"])
         self.assertTrue(denied.is_error)
 
     def test_mutation_profile_reads_fail_closed_until_projection_is_repaired(self) -> None:

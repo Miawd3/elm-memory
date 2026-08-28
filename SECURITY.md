@@ -24,6 +24,9 @@ Do not include real credentials, private memory, personal chat exports, or explo
   `agent_curated` writes in its allowlisted projects. Those records are active
   continuity, not verified truth; conflicts are deferred rather than silently
   replacing current claims.
+- New autonomous claims have digest-bound validity leases constrained by a
+  standing default/maximum TTL policy. Expiry removes them from ordinary reads
+  and active quota without deleting canonical history; it is not secure erasure.
 - The single-writer lock coordinates cooperating local processes; it is not a
   defense against a malicious process with the same filesystem permissions.
 - ELM does not guarantee secure erasure from Git history, backups, filesystem snapshots, or external copies.
