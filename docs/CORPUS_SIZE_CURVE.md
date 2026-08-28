@@ -152,11 +152,11 @@ bounded benchmark-panel evidence, not population inference. It does not
 generalize to unseen tasks, another model, another reasoning effort, or another
 CLI version; that broader claim requires a separately frozen holdout panel.
 
-Answer scoring remains deterministic. Besides an exact oracle phrase, it
-accepts only a short, non-numeric, non-contradictory subject prefix followed by
-that exact phrase (for example, `Application logs use <oracle phrase>`). This
-avoids rejecting a factually identical complete sentence without introducing a
-model judge or accepting alternatives, negations, or explanations.
+Answer scoring remains deterministic: the response must copy the single
+supporting sentence verbatim from the synthetic evidence. The oracle sentence
+is absent from the ELM and no-memory prompts and from the response schema. This
+avoids both brittle short-phrase framing and a model judge with hidden semantic
+latitude.
 
 Real calls always require `--execute`. The harness refuses odd repeat counts,
 unbounded run matrices, prompts above the configured estimate cap, per-run

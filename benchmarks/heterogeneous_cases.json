@@ -6,7 +6,7 @@
       "id": "orion_storage",
       "question": "Which exact database product and major version is accepted for Orion's durable telemetry records?",
       "lookup_query": "durable telemetry records PostgreSQL",
-      "expected_answer": "PostgreSQL 17",
+      "expected_answer": "Orion uses PostgreSQL 17 for durable telemetry records.",
       "expected_source_path": "20_projects/orion/DECISIONS.md",
       "expected_heading": "ODR-001 — PostgreSQL storage"
     },
@@ -14,7 +14,7 @@
       "id": "orion_time",
       "question": "To which time standard must Orion normalize persisted timestamps before storage?",
       "lookup_query": "persisted timestamps normalized UTC",
-      "expected_answer": "UTC",
+      "expected_answer": "Persisted timestamps are normalized to UTC before storage.",
       "expected_source_path": "20_projects/orion/DECISIONS.md",
       "expected_heading": "ODR-002 — UTC time"
     },
@@ -22,7 +22,7 @@
       "id": "orion_logs",
       "question": "What exact structured format and naming rule are accepted for Orion application logs?",
       "lookup_query": "application logs newline-delimited JSON stable event names",
-      "expected_answer": "newline-delimited JSON with stable event names",
+      "expected_answer": "Application logs use newline-delimited JSON with stable event names.",
       "expected_source_path": "20_projects/orion/DECISIONS.md",
       "expected_heading": "ODR-003 — Structured logs"
     }
