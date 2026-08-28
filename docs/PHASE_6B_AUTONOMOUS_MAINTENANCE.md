@@ -1,6 +1,6 @@
 # Phase 6B — Autonomous memory maintenance
 
-Status: Phase 6B.1 and 6B.2 implemented and locally validated; hosted validation pending
+Status: Phase 6B.1-6B.3 implemented and locally validated; Phase 6B.3 hosted validation pending
 
 Date: 2026-08-28
 
@@ -23,8 +23,8 @@ have different proofs and failure modes:
 3. **6B.3 — logical compaction:** bounded active-state consolidation while
    preserving canonical history and provenance.
 
-Phases 6B.1 and 6B.2 are implemented. Phase 6B.3 must not weaken their
-authority, replay, source-containment, or history guarantees.
+All three slices are implemented. Phase 6B.3 does not weaken the authority,
+replay, source-containment, or history guarantees established by 6B.1/6B.2.
 
 ## 2. Phase 6B.1 surface
 
@@ -166,11 +166,58 @@ Acceptance requires:
 - full tests, benchmark gates, doctor, repeat sync, and SQLite integrity remain
   clean.
 
-## 8. Deferred Phase 6B.3 gate
+## 8. Phase 6B.3 logical compaction
 
-Compaction in Phase 6B.3 is logical rather than destructive by default. It may
-reduce active retrieval state or produce a bounded derived snapshot, but it must
-not erase canonical claims, proposals, events, evidence references, or the path
-needed to explain and reverse a consolidation. Model-generated summaries remain
-outside the deterministic baseline until a measured task-level failure justifies
-them.
+Phase 6B.3 adds no mutation and no MCP tool. The existing `history` surface gains
+two optional read modes:
+
+- `compact: true` / CLI `--compact` returns a deterministic current-state
+  lineage manifest under an explicit estimated-token budget; and
+- `lineage_claim_id` / CLI `--lineage` expands the exact canonical lineage
+  containing any selected claim ID.
+
+The compact view groups only explicit `supersedes` / `superseded_by` links. Each
+constant-shape manifest identifies its root and head claims, current head value,
+status and authority, renewal/replacement counts, validity range, evidence/source
+reference counts, and a SHA-256 digest over the ordered canonical lineage. It
+also supplies the stable claim ID needed for exact expansion. Aggregate proposal,
+event, evidence, tombstone, and contradiction counts remain visible even when
+the token budget omits individual lineages.
+
+The default budget is 1,200 estimated tokens; accepted budgets are bounded from
+512 to 32,768. The pretty-printed JSON response is measured with ELM's existing
+deterministic model-neutral estimator, and `estimated_tokens` cannot exceed the
+requested budget. `truncated`, `lineage_count_returned`, and
+`omitted_lineage_count` make omission explicit. Callers must narrow project,
+subject, or predicate scope or expand one exact lineage rather than infer omitted
+history.
+
+Logical compaction is derived on demand from canonical files. It does not create
+a canonical compaction record, move or edit a claim, delete an event, change an
+authority, alter active retrieval, or require an index-schema migration. Broken,
+asymmetric, cross-project, branching, or cyclic claim links fail closed; an
+explicitly deleted neighbor is accepted only when its metadata tombstone remains.
+Temporal reconstruction and deleted-item inspection remain exact-history modes
+and cannot be combined with the current-state compact view.
+
+Model-generated summaries remain outside the deterministic baseline until a
+measured task-level failure justifies them.
+
+## 9. Phase 6B.3 acceptance contract
+
+Acceptance requires:
+
+- full history output remains backward compatible when no new option is used;
+- the exact 7/10/8 MCP tool surfaces remain unchanged;
+- same-value renewals and changed-value successors collapse into one lineage
+  manifest with correct counts and a stable canonical digest;
+- exact lineage expansion returns all surviving claims, proposals, events, and
+  evidence metadata needed to audit the manifest;
+- compact JSON never exceeds its requested deterministic token estimate and
+  reports every omitted lineage explicitly;
+- compaction and exact expansion do not change any canonical file;
+- rebuild produces the same logical snapshot;
+- incompatible temporal/deleted options and malformed lineage graphs fail
+  closed; and
+- full tests, deterministic benchmark gates, doctor, repeat sync, and SQLite
+  integrity remain clean.

@@ -1228,6 +1228,291 @@ class AutonomousMemoryCLITests(unittest.TestCase):
             self.assertEqual([], history["proposals"])
             self.assertEqual([], history["claims"])
 
+    def test_logical_compaction_is_bounded_rebuildable_and_exactly_expandable(self) -> None:
+        def canonical_hashes(root: Path) -> dict[str, str]:
+            return {
+                path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(root.rglob("*"))
+                if path.is_file() and ".elm" not in path.parts
+            }
+
+        with FixtureCopy() as root:
+            initialize(root)
+            source_root = root.parent / "repository"
+            source_root.mkdir()
+            source = source_root / "runtime.txt"
+            source.write_bytes(b"runtime=postgres-18\n")
+            first_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            first_request = request()
+            first_request["source_refs"] = [
+                f"repo://workspace/runtime.txt@sha256:{first_digest}"
+            ]
+            first = json.loads(remember_cli(root, first_request).stdout)
+
+            first_history = run_cli(root, "history", "--project", "orion", "--no-sync")
+            first_claim = first_history["claims"][0]
+            renewal = request(
+                submission_id="submission_22222222-2222-4222-8222-222222222222",
+                valid_from="2026-08-27T06:00:00Z",
+            )
+            renewal.update({
+                "source_refs": [f"repo://workspace/runtime.txt@sha256:{first_digest}"],
+                "supersedes_claim_id": first_claim["claim_id"],
+                "expected_claim_sha256": first_claim["content_sha256"],
+            })
+            renewed = json.loads(remember_cli(
+                root,
+                renewal,
+                "--source-root",
+                f"workspace={source_root}",
+            ).stdout)
+
+            source.write_bytes(b"runtime=postgres-19\n")
+            second_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            second_history = run_cli(root, "history", "--project", "orion", "--no-sync")
+            second_claim = next(
+                item for item in second_history["claims"] if item["status"] == "accepted"
+            )
+            replacement = request(
+                submission_id="submission_33333333-3333-4333-8333-333333333333",
+                object_value="PostgreSQL 19",
+                valid_from="2026-08-27T12:00:00Z",
+            )
+            replacement.update({
+                "source_refs": [f"repo://workspace/runtime.txt@sha256:{second_digest}"],
+                "supersedes_claim_id": second_claim["claim_id"],
+                "expected_claim_sha256": second_claim["content_sha256"],
+            })
+            replaced = json.loads(remember_cli(
+                root,
+                replacement,
+                "--source-root",
+                f"workspace={source_root}",
+            ).stdout)
+            before = canonical_hashes(root)
+            full = run_cli(root, "history", "--project", "orion", "--no-sync")
+            compact = run_cli(
+                root,
+                "history",
+                "--project",
+                "orion",
+                "--compact",
+                "--budget",
+                "1200",
+                "--no-sync",
+            )
+            lineage_id = compact["lineages"][0]["lineage_id"]
+            expanded = run_cli(
+                root,
+                "history",
+                "--project",
+                "orion",
+                "--lineage",
+                lineage_id,
+                "--no-sync",
+            )
+            run_cli(root, "rebuild")
+            rebuilt_compact = run_cli(
+                root,
+                "history",
+                "--project",
+                "orion",
+                "--compact",
+                "--budget",
+                "1200",
+                "--no-sync",
+            )
+            after = canonical_hashes(root)
+
+        self.assertEqual("renewed", renewed["action"])
+        self.assertEqual("superseded", replaced["action"])
+        self.assertEqual(3, len(full["claims"]))
+        self.assertEqual("logical_compaction", compact["view"])
+        self.assertLessEqual(compact["estimated_tokens"], compact["budget_tokens"])
+        self.assertEqual(1, compact["lineage_count"])
+        self.assertEqual(1, compact["lineage_count_returned"])
+        self.assertFalse(compact["truncated"])
+        summary = compact["lineages"][0]
+        self.assertEqual(first["claim_id"], summary["lineage_id"])
+        self.assertEqual(replaced["claim_id"], summary["head_claim_id"])
+        self.assertEqual("PostgreSQL 19", summary["head_object"])
+        self.assertEqual(3, summary["claim_count"])
+        self.assertEqual(1, summary["renewal_count"])
+        self.assertEqual(1, summary["replacement_count"])
+        self.assertEqual(3, len(expanded["claims"]))
+        self.assertEqual(3, len(expanded["proposals"]))
+        self.assertEqual(3, len(expanded["events"]))
+        self.assertEqual(summary, expanded["logical_compaction"])
+        self.assertEqual(compact, rebuilt_compact)
+        self.assertEqual(before, after)
+
+    def test_logical_compaction_truncates_within_budget_without_losing_exact_history(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            for ordinal, subject in enumerate(("Aurora", "Gateway", "Worker", "Console"), start=1):
+                value = request(
+                    submission_id=(
+                        f"submission_{ordinal:08d}-{ordinal:04d}-4{ordinal:03d}-8{ordinal:03d}-{ordinal:012d}"
+                    )
+                )
+                value["subject"] = subject
+                result = remember_cli(root, value)
+                self.assertEqual(0, result.returncode, result.stderr)
+            compact = run_cli(
+                root,
+                "history",
+                "--project",
+                "orion",
+                "--compact",
+                "--budget",
+                "512",
+                "--no-sync",
+            )
+            exact = run_cli(root, "history", "--project", "orion", "--no-sync")
+
+        self.assertEqual(4, compact["lineage_count"])
+        self.assertTrue(compact["truncated"])
+        self.assertLess(compact["lineage_count_returned"], compact["lineage_count"])
+        self.assertEqual(
+            compact["lineage_count"] - compact["lineage_count_returned"],
+            compact["omitted_lineage_count"],
+        )
+        self.assertLessEqual(compact["estimated_tokens"], 512)
+        self.assertEqual(4, len(exact["claims"]))
+
+    def test_logical_compaction_preserves_explicit_deleted_neighbor_anchor(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            source_root = root.parent / "repository"
+            source_root.mkdir()
+            source = source_root / "runtime.txt"
+            source.write_bytes(b"runtime=postgres-18\n")
+            first_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            first_request = request()
+            first_request["source_refs"] = [
+                f"repo://workspace/runtime.txt@sha256:{first_digest}"
+            ]
+            first = json.loads(remember_cli(root, first_request).stdout)
+            first_history = run_cli(root, "history", "--project", "orion", "--no-sync")
+            previous = first_history["claims"][0]
+            source.write_bytes(b"runtime=postgres-19\n")
+            second_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            replacement = request(
+                submission_id="submission_22222222-2222-4222-8222-222222222222",
+                object_value="PostgreSQL 19",
+                valid_from="2026-08-27T12:00:00Z",
+            )
+            replacement.update({
+                "source_refs": [f"repo://workspace/runtime.txt@sha256:{second_digest}"],
+                "supersedes_claim_id": previous["claim_id"],
+                "expected_claim_sha256": previous["content_sha256"],
+            })
+            second = json.loads(remember_cli(
+                root,
+                replacement,
+                "--source-root",
+                f"workspace={source_root}",
+            ).stdout)
+            run_cli(
+                root,
+                "delete",
+                first["claim_id"],
+                "--actor",
+                "operator:test",
+                "--reason-code",
+                "obsolete",
+            )
+            compact = run_cli(
+                root,
+                "history",
+                "--project",
+                "orion",
+                "--compact",
+                "--budget",
+                "1200",
+                "--no-sync",
+            )
+            expanded = run_cli(
+                root,
+                "history",
+                "--lineage",
+                second["claim_id"],
+                "--include-deleted",
+                "--no-sync",
+            )
+            doctor = run_cli(root, "doctor", "--no-sync")
+            tombstone_file = (
+                root / "30_agent_logs" / "elm_tombstones" / f"{first['claim_id']}.json"
+            )
+            tombstone = json.loads(tombstone_file.read_text(encoding="utf-8"))
+            tombstone["project"] = "other"
+            tombstone_file.write_text(
+                json.dumps(tombstone, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            cross_project = run_cli_process(
+                root,
+                "history",
+                "--project",
+                "orion",
+                "--compact",
+                "--no-sync",
+            )
+
+        self.assertEqual(0, doctor["issue_count"])
+        self.assertEqual(1, compact["lineage_count"])
+        summary = compact["lineages"][0]
+        self.assertEqual(first["claim_id"], summary["predecessor_tombstone_id"])
+        self.assertEqual(1, summary["claim_count"])
+        self.assertEqual(1, compact["aggregate"]["tombstone_count"])
+        self.assertEqual([first["claim_id"]], [item["item_id"] for item in expanded["tombstones"]])
+        self.assertIn("item_deleted", {item["action"] for item in expanded["events"]})
+        self.assertEqual(2, cross_project.returncode)
+        self.assertIn("cannot cross project boundaries", cross_project.stderr)
+
+    def test_logical_compaction_rejects_incompatible_or_broken_lineage(self) -> None:
+        with FixtureCopy() as root:
+            initialize(root)
+            incompatible = run_cli_process(
+                root,
+                "history",
+                "--compact",
+                "--recorded-at",
+                "2026-08-27T00:00:00Z",
+                "--no-sync",
+            )
+            budget_without_compaction = run_cli_process(
+                root,
+                "history",
+                "--budget",
+                "1200",
+                "--no-sync",
+            )
+            invalid_budget = run_cli_process(
+                root,
+                "history",
+                "--compact",
+                "--budget",
+                "0",
+                "--no-sync",
+            )
+            first = json.loads(remember_cli(root, request()).stdout)
+            claim = parse_claim(root / "20_projects" / "orion" / "CLAIMS" / f"{first['claim_id']}.md")
+            claim["supersedes"] = "claim_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+            (root / "20_projects" / "orion" / "CLAIMS" / f"{first['claim_id']}.md").write_bytes(
+                render_claim(claim)
+            )
+            broken = run_cli_process(root, "history", "--compact", "--no-sync")
+
+        self.assertEqual(2, incompatible.returncode)
+        self.assertIn("current-state derived view", incompatible.stderr)
+        self.assertEqual(2, budget_without_compaction.returncode)
+        self.assertIn("available only with --compact", budget_without_compaction.stderr)
+        self.assertEqual(2, invalid_budget.returncode)
+        self.assertIn("between 512 and 32768", invalid_budget.stderr)
+        self.assertEqual(2, broken.returncode)
+        self.assertIn("missing predecessor", broken.stderr)
+
 
 @unittest.skipUnless(Client is not None, "install elm-memory[mcp] to run MCP tests")
 class AutonomousMemoryMCPTests(unittest.TestCase):
@@ -1298,6 +1583,63 @@ class AutonomousMemoryMCPTests(unittest.TestCase):
         self.assertEqual(90, status.structured_content["agent_memory_limits"]["default_ttl_days"])
         self.assertEqual(365, status.structured_content["agent_memory_limits"]["max_ttl_days"])
         self.assertTrue(denied.is_error)
+
+    def test_history_tool_exposes_bounded_compaction_and_exact_lineage_without_new_tool(self) -> None:
+        async def run(root: Path):
+            async with Client(autonomous_server(root), raise_exceptions=True) as client:
+                tools = await client.list_tools()
+                remembered = await client.call_tool("remember_memory", {
+                    "submission_id": "submission_44444444-4444-4444-8444-444444444444",
+                    "project": "orion",
+                    "subject": "Aurora",
+                    "predicate": "uses",
+                    "object": "PostgreSQL 18",
+                    "valid_from": "2026-08-27T00:00:00Z",
+                    "source_refs": [],
+                    "evidence": [],
+                })
+                compact = await client.call_tool("history", {
+                    "project": "orion",
+                    "compact": True,
+                    "budget_tokens": 1200,
+                })
+                default_compact = await client.call_tool("history", {
+                    "project": "orion",
+                    "compact": True,
+                })
+                lineage_id = compact.structured_content["lineages"][0]["lineage_id"]
+                expanded = await client.call_tool("history", {
+                    "project": "orion",
+                    "lineage_claim_id": lineage_id,
+                })
+                misused_budget = await client.call_tool("history", {
+                    "project": "orion",
+                    "budget_tokens": 1200,
+                })
+                return tools, remembered, compact, default_compact, expanded, misused_budget
+
+        with FixtureCopy() as root:
+            initialize(root)
+            tools, remembered, compact, default_compact, expanded, misused_budget = asyncio.run(
+                run(root)
+            )
+
+        self.assertEqual(AUTONOMOUS_TOOLS, {tool.name for tool in tools.tools})
+        self.assertFalse(remembered.is_error)
+        self.assertFalse(compact.is_error)
+        self.assertEqual("logical_compaction", compact.structured_content["view"])
+        self.assertLessEqual(
+            compact.structured_content["estimated_tokens"],
+            compact.structured_content["budget_tokens"],
+        )
+        self.assertEqual(1200, default_compact.structured_content["budget_tokens"])
+        self.assertFalse(expanded.is_error)
+        self.assertEqual(1, len(expanded.structured_content["claims"]))
+        self.assertEqual(
+            remembered.structured_content["claim_id"],
+            expanded.structured_content["claims"][0]["claim_id"],
+        )
+        self.assertTrue(misused_budget.is_error)
 
     def test_remember_memory_forwards_source_verified_cas_without_new_tool(self) -> None:
         async def run(root: Path, source_root: Path, first_ref: str):

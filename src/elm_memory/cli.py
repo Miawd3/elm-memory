@@ -39,6 +39,7 @@ from .governance import (
     ACCEPTED_AUTHORITIES,
     AgentMemoryLifecyclePolicy,
     AgentMemoryLimits,
+    DEFAULT_COMPACTION_BUDGET,
     EVIDENCE_KINDS,
     PROPOSAL_AUTHORITIES,
     REASON_CODES,
@@ -52,6 +53,8 @@ from .governance import (
     delete_item,
     dispute_claim,
     history_view,
+    lineage_history_view,
+    logical_compaction_view,
     governance_projection_digest,
     load_root_identity,
     root_identity_path,
@@ -1599,15 +1602,47 @@ def command_delete(args, con: sqlite3.Connection, root: Path) -> None:
 
 def command_history(args, con: sqlite3.Connection, root: Path) -> None:
     _prepare_governed_read(args, con, root)
-    emit(history_view(
-        root,
-        project=args.project,
-        subject=args.subject,
-        predicate=args.predicate,
-        valid_at=args.valid_at,
-        recorded_at=args.recorded_at,
-        include_deleted=args.include_deleted,
-    ), args.json)
+    if args.compact:
+        if args.valid_at or args.recorded_at or args.include_deleted or args.lineage:
+            raise GovernanceError(
+                "logical compaction is a current-state derived view; temporal, deleted, "
+                "and exact-lineage options remain available through full history."
+            )
+        result = logical_compaction_view(
+            root,
+            project=args.project,
+            subject=args.subject,
+            predicate=args.predicate,
+            budget_tokens=(
+                args.budget if args.budget is not None else DEFAULT_COMPACTION_BUDGET
+            ),
+        )
+    elif args.lineage:
+        if args.subject or args.predicate or args.valid_at or args.recorded_at:
+            raise GovernanceError(
+                "exact lineage expansion cannot be combined with subject, predicate, or temporal filters."
+            )
+        if args.budget is not None:
+            raise GovernanceError("--budget is available only with --compact.")
+        result = lineage_history_view(
+            root,
+            lineage_claim_id=args.lineage,
+            project=args.project,
+            include_deleted=args.include_deleted,
+        )
+    else:
+        if args.budget is not None:
+            raise GovernanceError("--budget is available only with --compact.")
+        result = history_view(
+            root,
+            project=args.project,
+            subject=args.subject,
+            predicate=args.predicate,
+            valid_at=args.valid_at,
+            recorded_at=args.recorded_at,
+            include_deleted=args.include_deleted,
+        )
+    emit(result, args.json)
 
 
 def command_recover(args, con: sqlite3.Connection, root: Path) -> None:
@@ -2061,7 +2096,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("item_id")
     p.add_argument("--reason-code", required=True, choices=tuple(sorted(REASON_CODES)))
 
-    p = sub.add_parser("history", help="Query canonical claim history, lifecycle events, and contradictions.")
+    p = sub.add_parser(
+        "history",
+        help="Query exact canonical history or a bounded logical-compaction view.",
+    )
     add_common(p)
     p.add_argument("--project")
     p.add_argument("--subject")
@@ -2069,6 +2107,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--valid-at")
     p.add_argument("--recorded-at")
     p.add_argument("--include-deleted", action="store_true")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--compact",
+        action="store_true",
+        help="Return a bounded deterministic lineage snapshot without changing canonical history.",
+    )
+    mode.add_argument(
+        "--lineage",
+        help="Expand the exact canonical lineage containing this claim ID.",
+    )
+    p.add_argument(
+        "--budget",
+        type=int,
+        help=f"Estimated-token budget for --compact (default {DEFAULT_COMPACTION_BUDGET}).",
+    )
     p.add_argument("--no-sync", action="store_true")
 
     p = sub.add_parser("recover", help="Preview or roll back incomplete canonical governance transactions.")

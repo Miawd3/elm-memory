@@ -491,8 +491,11 @@ def create_server(
         valid_at: str | None = None,
         recorded_at: str | None = None,
         include_deleted: bool = False,
+        compact: bool = False,
+        budget_tokens: int | None = None,
+        lineage_claim_id: str | None = None,
     ) -> dict[str, Any]:
-        """Query canonical claims, lifecycle events, and contradictions by valid/recorded time."""
+        """Query exact history, a bounded logical snapshot (default 1200 tokens), or one lineage."""
         arguments = ["history", "--no-sync"]
         for flag, value in (
             ("--project", project),
@@ -505,6 +508,12 @@ def create_server(
                 arguments.extend((flag, value))
         if include_deleted:
             arguments.append("--include-deleted")
+        if compact:
+            arguments.append("--compact")
+        if budget_tokens is not None:
+            arguments.extend(("--budget", str(budget_tokens)))
+        if lineage_claim_id:
+            arguments.extend(("--lineage", lineage_claim_id))
         return invoke(*arguments)
 
     @server.tool(

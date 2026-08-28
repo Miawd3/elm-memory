@@ -1,8 +1,8 @@
 # ELM v1 — Corrected Architecture and Implementation Plan
 
-Status: active staged architecture; Phases 1–6B.1 verified and merged; Phase 6B.2 locally validated
+Status: active staged architecture; Phases 1–6B.2 verified and merged; Phase 6B.3 locally validated
 
-Last updated: 2026-08-27
+Last updated: 2026-08-28
 
 Project: ELM — External Local Memory
 
@@ -57,17 +57,23 @@ mutation remain unavailable.
 - Phase 6A is verified and merged: an explicit autonomous profile adds one
   bounded `remember_memory` tool, labels active writes `agent_curated`, reuses
   exact duplicates, and defers conflicts or quota overflow.
-- Phase 6B.1 is implemented and locally validated: new autonomous claims use
+- Phase 6B.1 is implemented and validated: new autonomous claims use
   digest-bound validity leases, expire non-destructively, and stop consuming
   active quota after expiry without expanding the MCP tool surface.
-- Raw evidence snapshots, autonomous conflict resolution, destructive or
+- Phase 6B.2 is implemented and validated: source-contained, byte-verified CAS
+  can replace only the current `agent_curated` lineage head while preserving
+  atomic history and authority.
+- Phase 6B.3 is implemented and locally validated: the existing `history` tool
+  can return a token-bounded derived lineage manifest and expand one exact
+  canonical lineage without writing a compaction record.
+- Raw evidence snapshots, semantic conflict resolution, destructive or
   arbitrary-authority MCP mutation, embeddings, and model summarization remain
   deferred.
 
 ### Provisional design
 
-The exact implemented Phase 1–4 contracts are repository truth and are linked
-from their phase documents. Later roadmap phases remain proposed until explicit
+The implemented Phase 1–6B contracts are repository truth and are linked from
+their phase documents. Later roadmap phases remain proposed until explicit
 authorization and implementation validation.
 
 ## 3. Architectural problems repaired
@@ -706,8 +712,10 @@ untrusted data, rank below stronger current sources, reuse exact duplicates,
 and defer conflicts or quota overflow instead of silently replacing memory.
 
 Phase 6B addresses autonomous expiry, conflict resolution, reversible
-supersession, and compaction. Phase 6B.1 implements digest-bound validity leases;
-later source-backed replacement and logical compaction remain separately gated.
+supersession, and compaction. Phase 6B.1 implements digest-bound validity leases,
+Phase 6B.2 implements source-verified compare-and-swap replacement, and Phase
+6B.3 implements token-bounded logical lineage manifests with exact canonical
+expansion. None adds stronger authority or destructive history rewriting.
 The contracts are in [PHASE_6_AUTONOMOUS_MEMORY.md](PHASE_6_AUTONOMOUS_MEMORY.md)
 and [PHASE_6B_AUTONOMOUS_MAINTENANCE.md](PHASE_6B_AUTONOMOUS_MAINTENANCE.md).
 
@@ -817,8 +825,10 @@ after the per-item human-approval path was removed from the active roadmap.
 **Phase 6B.1 bounded validity leases** is implemented and merged as
 defined in [PHASE_6B_AUTONOMOUS_MAINTENANCE.md](PHASE_6B_AUTONOMOUS_MAINTENANCE.md).
 **Phase 6B.2 source-verified compare-and-swap supersession** is implemented and
-locally validated without expanding the eight-tool autonomous MCP surface.
-Logical compaction remains the next separately reviewed implementation slice.
+validated without expanding the eight-tool autonomous MCP surface.
+**Phase 6B.3 logical compaction** adds a bounded deterministic lineage view and
+exact lineage expansion to the existing `history` surface. It does not write a
+compaction record, change canonical files, or alter the 7/10/8 MCP tool counts.
 Direct arbitrary Markdown writes, raw evidence snapshots,
 embeddings, authenticated multi-user scopes, and model summarization remain
 outside this gate.

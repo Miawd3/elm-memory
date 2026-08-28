@@ -2,9 +2,9 @@
 
 ## Current phase
 
-Phases 1-5A, Phase 6A, and Phase 6B.1 are implemented, validated, and merged.
-Phase 6B.2 source-verified compare-and-swap is implemented and locally
-validated; hosted validation is the current gate before Phase 6B.3 begins.
+Phases 1-5A, Phase 6A, Phase 6B.1, and Phase 6B.2 are implemented, validated,
+and merged. Phase 6B.3 logical compaction is implemented and locally validated;
+hosted validation is the current gate before private-v1 release hardening.
 The process default remains exactly seven read tools; the opt-in proposal profile
 adds only three untrusted-candidate tools and cannot change accepted memory.
 The separate opt-in autonomous profile adds only `remember_memory`, writes
@@ -34,6 +34,9 @@ corpus-size, and frozen holdout panels.
 - Autonomous CAS must bind target ID and canonical claim hash, verify current
   bytes only inside operator-configured contained source roots, preserve
   `agent_curated` authority and lineage, and atomically write old/new/event state.
+- Logical compaction must remain a bounded, deterministic, read-only lineage
+  view. It must preserve exact canonical expansion, report truncation, fail
+  closed on malformed lineage links, and never rewrite or delete audit history.
 - A rendered context packet must never exceed its requested deterministic token estimate.
 - Context must label authority/status, preserve exact source locators, and quote retrieved bodies as untrusted data.
 - Retrieval traces contain no source body and no raw task text by default; they remain disposable runtime state.
