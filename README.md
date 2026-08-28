@@ -2,13 +2,14 @@
 
 ELM is a local, inspectable project-memory and deterministic retrieval layer for coding agents. Canonical knowledge stays in Markdown; SQLite FTS5 is a disposable index that can be deleted and rebuilt.
 
-This repository is in **Phase 6A / pre-alpha**. In addition to deterministic
-retrieval, stable identity, and bounded context packets, it now implements a
-governed proposal-to-claim lifecycle with reference-only evidence metadata,
-valid/recorded-time history, recoverable canonical transactions, the Phase 4
-read-only MCP adapter, an opt-in proposal-only profile, and a separate opt-in
-autonomous profile for bounded low-authority agent memory. Raw evidence
-snapshots and arbitrary accepted-state MCP mutation remain unavailable.
+This repository is in **Phase 6B.3 / private-v1 candidate** (pre-release). In
+addition to deterministic retrieval, stable identity, bounded context packets,
+and a governed candidate/claim lifecycle, it implements an opt-in autonomous
+profile with bounded validity leases (Phase 6B.1), source-verified compare-and-swap
+(CAS) supersession and active renewal (Phase 6B.2), and bounded read-only logical
+lineage compaction (Phase 6B.3). Raw evidence snapshots, semantic conflict
+resolution, arbitrary accepted-state MCP mutation, and hosted/model dependencies
+remain unavailable.
 
 ## Why ELM
 
@@ -494,9 +495,13 @@ modification, redistribution, and commercial use under its notice and license
 conditions, and includes an explicit contributor patent grant.
 
 The GitHub repository remains a private pre-release while the external-facing
-release decisions and documentation are completed. Phase 4 validation evidence
-is recorded in [docs/PHASE_4_READINESS.md](docs/PHASE_4_READINESS.md); the Phase
-5A contract is [docs/PHASE_5_TRUSTED_MUTATIONS.md](docs/PHASE_5_TRUSTED_MUTATIONS.md).
+release decisions and documentation are completed. Readiness tracking is
+recorded in [docs/RELEASE_READINESS.md](docs/RELEASE_READINESS.md); autonomous
+maintenance contracts are in
+[docs/PHASE_6B_AUTONOMOUS_MAINTENANCE.md](docs/PHASE_6B_AUTONOMOUS_MAINTENANCE.md);
+Phase 4 validation evidence is recorded in
+[docs/PHASE_4_READINESS.md](docs/PHASE_4_READINESS.md); and the Phase 5A contract
+is in [docs/PHASE_5_TRUSTED_MUTATIONS.md](docs/PHASE_5_TRUSTED_MUTATIONS.md).
 
 ## Current limitations
 

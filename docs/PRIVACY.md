@@ -1,4 +1,4 @@
-# Privacy Model — Phase 6B.1
+# Privacy Model — Phase 6B.3
 
 ELM keeps durable project memory in inspectable files under the configured root.
 `<root>/.elm/index.sqlite` contains copied Markdown text and governed-record
@@ -25,7 +25,14 @@ to access to the indexed memory.
 - The opt-in autonomous profile may persist normal-sensitivity candidate text,
   source locators, hashes, and active `agent_curated` claims for allowlisted
   projects. It is bounded by request, reference, rate, pending-record, and
-  active-memory quotas; it exposes no supersession, deletion, or policy tool.
+  active-memory quotas. It exposes no arbitrary deletion, dispute, or policy tool.
+  Under Phase 6B.2, it supports source-verified compare-and-swap (CAS) supersession
+  and active-lease renewal for the sole current `agent_curated` lineage head
+  within operator-configured source roots, without granting stronger authority.
+- Phase 6B.3 logical compaction is a bounded, deterministic, read-only view
+  derived on demand during `history` retrieval. It derives lineage manifests under
+  an explicit token budget, reports truncation explicitly, and never writes
+  compaction records, modifies canonical Markdown, or deletes historical events.
 - New autonomous claims use bounded, digest-bound validity leases. Expiry hides
   a claim from ordinary retrieval and frees active quota, but the canonical
   proposal, claim, event, and reference metadata remain available in history.
@@ -73,7 +80,9 @@ a physically deleted claim is limited to its tombstone metadata.
 - Archive, project, namespace, history, and sensitivity filtering are governance
   controls, not authentication between mutually untrusted users or agents.
 - A source hash proves equality with bytes supplied later; it does not prove the
-  source's authorship, truth, availability, or freshness.
+  source's authorship, truth, availability, or ongoing freshness. Phase 6B.2 CAS
+  verifies current local bytes inside an operator-configured root at transition check
+  time only, not permanent correctness or external repository invariance.
 - A task hash can support confirmation of a guessed task; metadata-only traces
   are privacy-minimized, not anonymous.
 - ELM cannot control what a calling agent, terminal, backup tool, or model

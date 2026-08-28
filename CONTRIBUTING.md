@@ -1,14 +1,18 @@
 # Contributing
 
-ELM is currently building its Phase 1 identity, migration, read-policy, and concurrency foundations. Contributions should preserve existing CLI behavior unless a change includes a documented compatibility decision and migration path.
+ELM has implemented the active roadmap capabilities through Phase 6B.3 and is currently hardening its private-v1 candidate release. Phase 5B remains inactive historical research. Contributions should preserve existing CLI and MCP behavior, maintain canonical Markdown invariants, keep derived SQLite indexes disposable, and adhere to the strict authority, lease, and provenance boundaries.
 
 ## Development setup
 
 ```bash
 python -m venv .venv
 python -m pip install --no-deps -e .
+python -m compileall -q src tests benchmarks scripts
 python -m unittest discover -s tests -v
 python benchmarks/run_benchmark.py --assert-pass
+python benchmarks/run_heterogeneous_pilot.py --validate-only --assert-pass
+python benchmarks/run_corpus_size_curve.py --validate-only --assert-pass
+python benchmarks/run_holdout_confirmation.py --validate-only --assert-pass
 ```
 
 ## Contribution rules
