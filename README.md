@@ -13,6 +13,20 @@ ELM works with Codex, Claude, Gemini, Cursor, and other terminal- or MCP-capable
 - **Agent-independent.** The same CLI and MCP surface can be used by different coding agents.
 - **Safe defaults.** Backups and `99_archive` are excluded from normal retrieval, and retrieved text is labeled as untrusted data.
 
+## Version and integration scope
+
+The published stable release remains **v1.0.0 (August 28, 2026)**. This branch
+contains the maintained standalone **1.0.1.dev0** engine source and regression
+tests; it is a development snapshot, not a new release or a new installer.
+The stable downloads below still install v1.0.0. See
+[Current development](docs/CURRENT_DEVELOPMENT.md) for source provenance,
+observable changes, architecture benefits, and compatibility limits.
+
+ELM is independent of an agent host. A custom Hermes integration can install the
+ELM engine together with a separate Hermes adapter, but the adapter's version is
+not the engine's version. This repository does not establish bundled ELM support
+in stock Hermes or in its public package distribution.
+
 ## Install
 
 ### Windows 10/11 x64

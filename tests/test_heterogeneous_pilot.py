@@ -546,8 +546,9 @@ class HeterogeneousPilotContractTests(unittest.TestCase):
         def fake_run_antigravity(**kwargs):
             match = PILOT.re.search(
                 r"source: elm://section/(section_[0-9a-f-]+)\n"
-                + r"path: "
-                + PILOT.re.escape(case["expected_source_path"]),
+                + r'path: "'
+                + PILOT.re.escape(case["expected_source_path"])
+                + '"',
                 kwargs["prompt"],
             )
             self.assertIsNotNone(match)

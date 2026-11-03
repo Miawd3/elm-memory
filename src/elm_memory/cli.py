@@ -679,7 +679,7 @@ def search_sections(
 
     sql = f"""
         SELECT d.id AS document_id,d.document_uid,s.id AS section_id,s.section_key,s.section_namespace,
-               d.path,d.title,d.namespace,d.project,d.status,d.last_updated,d.is_archive,
+               d.path,d.title,d.summary AS document_summary,d.namespace,d.project,d.status,d.last_updated,d.is_archive,
                s.heading,s.heading_path,s.start_line,s.end_line,
                c.claim_id,c.subject AS claim_subject,c.predicate AS claim_predicate,
                c.object AS claim_object,c.authority AS claim_authority,c.valid_from,c.valid_to,
@@ -727,6 +727,7 @@ def command_search(args, con: sqlite3.Connection, root: Path):
             "claim_status": result.get("status") if result.get("claim_id") else None,
         })
         item.pop("text", None)
+        item.pop("document_summary", None)
         public_results.append(item)
     emit({"query": args.query, "count": len(public_results), "results": public_results}, args.json)
 
@@ -764,7 +765,7 @@ def _context_supplemental_sections(
     )
     rows = con.execute(
         f"""SELECT d.id AS document_id,d.document_uid,s.id AS section_id,s.section_key,
-                   s.section_namespace,d.path,d.title,d.namespace,d.project,d.status,
+                   s.section_namespace,d.path,d.title,d.summary AS document_summary,d.namespace,d.project,d.status,
                    d.last_updated,d.is_archive,s.heading,s.heading_path,s.start_line,
                    s.end_line,s.token_estimate,s.text,0.0 AS score,'' AS snippet
             FROM sections s JOIN documents d ON d.id=s.document_id
@@ -942,6 +943,9 @@ def resolve_document(con: sqlite3.Connection, ref: str, args) -> dict:
         claim_id = validate_id(ref, "claim")
         reference_conditions = ["d.id=(SELECT document_id FROM claims WHERE claim_id=?)"]
         reference_params = [claim_id]
+    elif ref.lower().startswith("section_"):
+        reference_conditions = ["d.id=(SELECT document_id FROM sections WHERE section_key=?)"]
+        reference_params = [ref.lower()]
     else:
         reference_conditions = ["d.path=?"]
         reference_params = [ref.replace("\\", "/")]
@@ -996,7 +1000,25 @@ def command_outline(args, con: sqlite3.Connection, root: Path):
 
 def command_read(args, con: sqlite3.Connection, root: Path):
     _require_stable_governance(root)
-    emit(resolve_section(con, args.section, args), args.json)
+    if not args.document:
+        emit(resolve_section(con, args.section, args), args.json)
+        return
+
+    doc = resolve_document(con, args.section, args)
+    try:
+        source = (root / doc["path"]).resolve(strict=True)
+        source.relative_to(root.resolve())
+        raw = source.read_bytes()
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"Indexed document source is unavailable or outside the ELM root: {doc['path']}") from exc
+    if sha256_bytes(raw) != doc["content_hash"]:
+        raise SystemExit(f"Indexed document source changed; sync the index before reading: {doc['path']}")
+    doc.update(
+        text=raw.decode("utf-8-sig", errors="replace"),
+        read_mode="document",
+        source_current=True,
+    )
+    emit(doc, args.json)
 
 
 def command_related(args, con: sqlite3.Connection, root: Path):
@@ -1089,10 +1111,16 @@ def command_stats(args, con: sqlite3.Connection, root: Path):
     emit(out, args.json)
 
 
-def status_snapshot(root: Path) -> dict:
-    """Describe read-only index readiness without creating or refreshing derived state."""
+def status_snapshot(root: Path, *, full_integrity: bool = True) -> dict:
+    """Describe index readiness without refreshing derived state.
+
+    Readiness mode checks exact source freshness but omits SQLite's full quick check.
+    Its ``healthy`` field means ready for reads, not integrity-audited. The full
+    mode remains the default for mutation gates and explicit integrity checks.
+    """
     p = db_path(root)
     pending = pending_transactions(root)
+    markdown_paths = list(iter_markdown(root))
     result = {
         "root": str(root),
         "database": str(p),
@@ -1101,9 +1129,11 @@ def status_snapshot(root: Path) -> dict:
         "expected_index_schema_version": INDEX_SCHEMA_VERSION,
         "schema_compatible": False,
         "quick_check": None,
+        "check_mode": "full" if full_integrity else "readiness",
+        "integrity_checked": False,
         "sync_required": True,
         "indexed_documents": 0,
-        "markdown_files": sum(1 for _ in iter_markdown(root)),
+        "markdown_files": len(markdown_paths),
         "changed_or_unindexed_files": [],
         "removed_index_entries": [],
         "pending_transaction_count": len(pending),
@@ -1135,7 +1165,9 @@ def status_snapshot(root: Path) -> dict:
         version = schema_version(con)
         result["index_schema_version"] = version
         result["schema_compatible"] = version == INDEX_SCHEMA_VERSION
-        result["quick_check"] = con.execute("PRAGMA quick_check").fetchone()[0]
+        if full_integrity:
+            result["quick_check"] = con.execute("PRAGMA quick_check").fetchone()[0]
+            result["integrity_checked"] = True
         if not result["schema_compatible"]:
             result["errors"].append("incompatible_schema")
             return result
@@ -1162,7 +1194,7 @@ def status_snapshot(root: Path) -> dict:
             )
         }
         current: dict[str, tuple[int, int, str]] = {}
-        for path in iter_markdown(root):
+        for path in markdown_paths:
             raw = path.read_bytes()
             stat = path.stat()
             current[relpath(root, path)] = (
@@ -1188,7 +1220,7 @@ def status_snapshot(root: Path) -> dict:
 
     result["healthy"] = bool(
         result["schema_compatible"]
-        and result["quick_check"] == "ok"
+        and (result["quick_check"] == "ok" if full_integrity else True)
         and not result["sync_required"]
         and result["governance_projection_current"]
         and result["pending_transaction_count"] == 0
@@ -1198,7 +1230,7 @@ def status_snapshot(root: Path) -> dict:
 
 
 def command_status(args, root: Path) -> None:
-    emit(status_snapshot(root), args.json)
+    emit(status_snapshot(root, full_integrity=not args.readiness_only), args.json)
 
 
 def command_doctor(args, con: sqlite3.Connection, root: Path):
@@ -2103,8 +2135,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("outline", help="Return the heading tree/section IDs for a document ID or relative path.")
     add_common(p); add_read_policy(p); p.add_argument("document"); p.add_argument("--no-sync", action="store_true")
 
-    p = sub.add_parser("read", help="Read one indexed section by numeric ID or stable section key.")
+    p = sub.add_parser("read", help="Read one indexed section, or a complete document with --document.")
     add_common(p); add_read_policy(p); p.add_argument("section")
+    p.add_argument("--document", action="store_true", help="Read complete canonical text by indexed document UID, path, or numeric ID.")
 
     p = sub.add_parser("related", help="Return explicit outgoing/incoming document links.")
     add_common(p); add_read_policy(p); p.add_argument("document"); p.add_argument("--no-sync", action="store_true")
@@ -2114,6 +2147,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("status", help="Report read-only index readiness without refreshing derived state.")
     add_common(p)
+    p.add_argument("--readiness-only", action="store_true",
+                   help="Check exact source freshness and read readiness without SQLite quick_check; healthy does not attest full integrity.")
 
     p = sub.add_parser("doctor", help="Report metadata/link/duplicate issues without editing ELM.")
     add_common(p); p.add_argument("--limit", type=int, default=100); p.add_argument("--no-sync", action="store_true")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -449,7 +450,7 @@ class AutonomousMemoryCLITests(unittest.TestCase):
         self.assertEqual("verified_repository_memory", claim_results[0]["authority"])
         self.assertEqual("agent_curated_memory", claim_results[1]["authority"])
         packet_authorities = {item["authority"] for item in packet["sources"]}
-        self.assertIn("accepted_project_memory", packet_authorities)
+        self.assertIn("project_document", packet_authorities)
         self.assertIn("agent_curated_memory", packet_authorities)
 
     def test_related_link_rows_preserve_governed_source_and_target_provenance(self) -> None:
@@ -750,20 +751,23 @@ class AutonomousMemoryCLITests(unittest.TestCase):
         self.assertIn("Proposal-v3 payload digest mismatch", refused.stderr)
 
     def test_explicit_validity_is_bounded_before_canonical_mutation(self) -> None:
+        start = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=1)
+        valid_from = start.isoformat()
+        valid_to = (start + timedelta(days=2)).isoformat()
         with FixtureCopy() as root:
             initialize(root)
             accepted = json.loads(remember_cli(
                 root,
-                request(valid_to="2026-08-29T00:00:00Z"),
+                request(valid_from=valid_from, valid_to=valid_to),
             ).stdout)
 
-        self.assertEqual("2026-08-29T00:00:00.000000+00:00", accepted["valid_to"])
+        self.assertEqual((start + timedelta(days=2)).isoformat(timespec="microseconds"), accepted["valid_to"])
 
         with FixtureCopy() as root:
             initialize(root)
             refused = remember_cli(
                 root,
-                request(valid_to="2027-08-28T00:00:00Z"),
+                request(valid_from=valid_from, valid_to=(start + timedelta(days=366)).isoformat()),
             )
             history = run_cli(root, "history", "--project", "orion", "--no-sync")
 
