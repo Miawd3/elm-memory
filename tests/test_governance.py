@@ -172,7 +172,11 @@ class GovernedLifecycleTests(unittest.TestCase):
 
         self.assertEqual(1, len(history["contradictions"]))
         self.assertTrue(any(issue["kind"] == "claim_contradiction" for issue in doctor["issues"]))
-        self.assertTrue(any(source["authority"] == "accepted_conflicting_memory" for source in packet["sources"]))
+        self.assertTrue(any(
+            source["contradiction"] and source["claim_authority"]
+            and source["packet_class"] == "conflicts_or_provisional"
+            for source in packet["sources"]
+        ))
 
     def test_delete_removes_active_and_derived_content_but_keeps_tombstone(self) -> None:
         with FixtureCopy() as root:

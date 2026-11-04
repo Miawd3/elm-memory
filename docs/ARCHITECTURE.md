@@ -76,12 +76,19 @@ A packet contains:
 - authority and safety warnings;
 - source manifests with stable `elm://section/...` locators;
 - selected whole sections quoted as `untrusted_memory_data`;
+- governed claim propositions rendered as quoted subject/predicate/object data, with claim ID, raw claim authority, and normalized authority retained alongside the source;
+- coverage counts for exact sections, manifests, and omitted candidates, plus up to 64 compact omitted-source expansion locators and an explicit truncation flag in the JSON result;
 - the requested and estimated token counts;
 - the resolved project, namespace, archive, and status scope.
 
-A section that does not fit is represented by a manifest instead of being silently truncated or model-summarized. `read`, `outline`, and `related` provide progressive expansion.
+A section that does not fit is represented by a manifest when one fits. The packer selects fitting whole sections before spending space on manifests, so a large early source does not prevent smaller later evidence from appearing exactly. If even a manifest cannot fit, the omission count and bounded JSON locators expose that gap. `read`, `outline`, and `related` provide progressive expansion. Distinct stable section keys survive even when their paths and headings match.
 
-The token estimator is deterministic and provider-independent. It is a local packing budget, not billed-token accounting.
+Structured claim propositions appear only with represented sources (exact sections or manifests). Omitted-source entries retain compact provenance and locators for expansion, without copying proposition content.
+
+Document `Status` determines whether an ordinary document is labeled `project_document` or `provisional_project_document`; it does not grant ratified claim authority. Governed claims carry their raw `claim_authority` and a normalized authority label consistent with search and read. All retrieved bodies and claim propositions remain untrusted data.
+Packet status comes from the indexed canonical record. A `Status:` line inside retrieved section text remains quoted content and cannot change source provenance.
+
+The token estimator is deterministic and provider-independent. It is a local packing budget, not billed-token accounting. The budget covers the rendered `packet` string, not the surrounding JSON envelope, repeated structured provenance, task text, host prompts, or provider tokenization. A complete canonical document summary may be included as `source_summary` when exact text does not fit; this is stored source metadata, not a model-generated summary. `summary_count` is a subset of `manifest_count`, so total coverage is `exact_count + manifest_count + omitted_count`, not the sum of all four fields.
 
 ## Freshness and traces
 

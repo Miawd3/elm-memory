@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
-import re
 import uuid
 
 from .atomic import atomic_write_text
@@ -16,20 +15,9 @@ CONTEXT_PACKET_SCHEMA_VERSION = 1
 TRACE_FORMAT_VERSION = 1
 MIN_CONTEXT_BUDGET = 96
 MAX_CONTEXT_MANIFESTS = 12
+MAX_OMITTED_LOCATORS = 64
 DEFAULT_TRACE_RETENTION_DAYS = 30
 
-_CLASS_ORDER = (
-    "current_constraints",
-    "current_project_state",
-    "selected_exact_sections",
-    "conflicts_or_provisional",
-)
-_CLASS_WEIGHTS = {
-    "current_constraints": 0.25,
-    "current_project_state": 0.25,
-    "selected_exact_sections": 0.35,
-    "conflicts_or_provisional": 0.15,
-}
 _PROVISIONAL_TERMS = (
     "conflict",
     "contradiction",
@@ -39,8 +27,7 @@ _PROVISIONAL_TERMS = (
     "superseded",
     "unverified",
 )
-_ACCEPTED_STATUSES = {"accepted", "active", "complete", "current", "verified"}
-_SECTION_STATUS_RE = re.compile(r"(?im)^status:\s*([^\r\n]+)")
+_CURRENT_DOCUMENT_STATUSES = {"accepted", "active", "complete", "current", "verified"}
 
 
 def _render(blocks: list[str]) -> str:
@@ -52,10 +39,8 @@ def _fits(blocks: list[str], block: str, budget: int) -> bool:
 
 
 def _effective_status(candidate: dict) -> str:
-    text = str(candidate.get("text") or "")
-    match = _SECTION_STATUS_RE.search(text)
-    if match:
-        return match.group(1).strip()
+    # The indexed document/claim status is provenance. A Status-looking line in
+    # retrieved section text is untrusted content and cannot replace it.
     return str(candidate.get("status") or "unspecified")
 
 
@@ -76,57 +61,106 @@ def _packet_class(candidate: dict, status: str) -> str:
     return "selected_exact_sections"
 
 
-def _authority(candidate: dict, packet_class: str, status: str) -> str:
-    if candidate.get("is_archive"):
-        return "historical_memory"
-    if candidate.get("claim_authority") == "agent_curated":
-        if candidate.get("contradiction"):
-            return "agent_curated_conflicting_memory"
-        if packet_class == "conflicts_or_provisional" or status.casefold() not in _ACCEPTED_STATUSES:
-            return "provisional_agent_curated_memory"
-        return "agent_curated_memory"
-    if packet_class == "conflicts_or_provisional" or status.casefold() not in _ACCEPTED_STATUSES:
-        if candidate.get("contradiction") and status.casefold() in _ACCEPTED_STATUSES:
-            return "accepted_conflicting_memory"
-        return "provisional_or_unclassified_memory"
-    return "accepted_project_memory"
+def _authority(candidate: dict, status: str, now: str) -> str:
+    """Use governed claim authority, never infer ratification from document Status."""
+    claim_authority = candidate.get("claim_authority")
+    if not claim_authority:
+        label = (
+            "project_document" if status.casefold() in _CURRENT_DOCUMENT_STATUSES
+            else "provisional_project_document"
+        )
+        return f"historical_{label}" if candidate.get("is_archive") else label
+    labels = {
+        "agent_curated": "agent_curated_memory",
+        "ratified_project_decision": "ratified_project_decision_memory",
+        "user_ratified": "user_ratified_memory",
+        "verified_repository_state": "verified_repository_memory",
+    }
+    label = labels.get(str(claim_authority), "governed_memory")
+    current = (
+        status.casefold() == "accepted"
+        and (not candidate.get("valid_from") or str(candidate["valid_from"]) <= now)
+        and (not candidate.get("valid_to") or str(candidate["valid_to"]) > now)
+        and not candidate.get("is_archive")
+    )
+    return label if current else f"historical_{label}"
 
 
 def _normalized_candidates(candidates: list[dict]) -> list[dict]:
     normalized: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[str] = set()
+    now = datetime.now(timezone.utc).isoformat()
     for raw in candidates:
         path = str(raw.get("path") or "")
         heading_path = str(raw.get("heading_path") or raw.get("heading") or "[preamble]")
-        identity = (path.casefold(), heading_path.casefold())
-        if not raw.get("section_key") or identity in seen:
+        section_key = str(raw.get("section_key") or "")
+        if not section_key or section_key in seen:
             continue
-        seen.add(identity)
+        seen.add(section_key)
         item = dict(raw)
         item["path"] = path
         item["heading_path"] = heading_path
         item["effective_status"] = _effective_status(item)
         item["packet_class"] = _packet_class(item, item["effective_status"])
-        item["authority"] = _authority(
-            item, item["packet_class"], item["effective_status"]
-        )
+        item["authority"] = _authority(item, str(item.get("status") or item["effective_status"]), now)
+        item["content_role"] = "untrusted_memory_data"
         item["locator"] = f"elm://section/{item['section_key']}"
         normalized.append(item)
     return normalized
 
 
 def _manifest_block(candidate: dict) -> str:
-    return "\n".join(
-        (
+    fields = [
             "[class=relevant_source_manifest]",
             f"source: {candidate['locator']}",
-            f"path: {candidate['path']}",
-            f"heading: {candidate['heading_path']}",
-            f"status: {candidate['effective_status']}",
-            f"authority: {candidate['authority']}",
+            f"path: {_safe_value(candidate['path'])}",
+            f"heading: {_safe_value(candidate['heading_path'])}",
+            f"status: {_safe_value(candidate['effective_status'])}",
+            f"authority: {_safe_value(candidate['authority'])}",
+            f"content_role: {candidate['content_role']}",
             f"source_tokens: {int(candidate.get('token_estimate') or 0)}",
-        )
-    )
+    ]
+    if candidate.get("claim_id"):
+        fields.append(f"claim_id: {_safe_value(candidate['claim_id'])}")
+        fields.append(f"claim_authority: {_safe_value(candidate.get('claim_authority'))}")
+        fields.append(_claim_line(candidate))
+    if candidate.get("contradiction"):
+        fields.append("contradiction: true")
+    return "\n".join(fields)
+
+
+def _summary_block(candidate: dict) -> str:
+    """Render the complete canonical document Summary with a section expansion locator."""
+    fields = [
+        "[class=source_summary]",
+        f"source: {candidate['locator']}",
+        f"path: {_safe_value(candidate['path'])}",
+        f"heading: {_safe_value(candidate['heading_path'])}",
+        "summary_origin: canonical_document_metadata",
+        f"status: {_safe_value(candidate['effective_status'])}",
+        f"authority: {_safe_value(candidate['authority'])}",
+        f"content_role: {candidate['content_role']}",
+    ]
+    if candidate.get("claim_id"):
+        fields.append(f"claim_id: {_safe_value(candidate['claim_id'])}")
+        fields.append(f"claim_authority: {_safe_value(candidate.get('claim_authority'))}")
+    if candidate.get("contradiction"):
+        fields.append("contradiction: true")
+    fields.extend(("source_summary:", _quote_untrusted(candidate["document_summary"])))
+    return "\n".join(fields)
+
+
+def _safe_value(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _claim_line(candidate: dict) -> str:
+    claim = {
+        "subject": candidate.get("claim_subject"),
+        "predicate": candidate.get("claim_predicate"),
+        "object": candidate.get("claim_object"),
+    }
+    return "> claim: " + json.dumps(claim, ensure_ascii=False, separators=(",", ":"))
 
 
 def _quote_untrusted(text: str) -> str:
@@ -135,18 +169,23 @@ def _quote_untrusted(text: str) -> str:
 
 
 def _exact_block(candidate: dict) -> str:
-    return "\n".join(
-        (
+    fields = [
             f"[class={candidate['packet_class']}]",
             f"source: {candidate['locator']}",
-            f"path: {candidate['path']}",
-            f"heading: {candidate['heading_path']}",
-            f"status: {candidate['effective_status']}",
-            f"authority: {candidate['authority']}",
-            "content_role: untrusted_memory_data",
-            _quote_untrusted(str(candidate.get("text") or "")),
-        )
-    )
+            f"path: {_safe_value(candidate['path'])}",
+            f"heading: {_safe_value(candidate['heading_path'])}",
+            f"status: {_safe_value(candidate['effective_status'])}",
+            f"authority: {_safe_value(candidate['authority'])}",
+            f"content_role: {candidate['content_role']}",
+    ]
+    if candidate.get("claim_id"):
+        fields.append(f"claim_id: {_safe_value(candidate['claim_id'])}")
+        fields.append(f"claim_authority: {_safe_value(candidate.get('claim_authority'))}")
+        fields.append(_claim_line(candidate))
+    if candidate.get("contradiction"):
+        fields.append("contradiction: true")
+    fields.append(_quote_untrusted(str(candidate.get("text") or "")))
+    return "\n".join(fields)
 
 
 def build_context_packet(
@@ -174,63 +213,61 @@ def build_context_packet(
         f"- {warning}" for warning in warnings[:3]
     )
     blocks = ["ELM CONTEXT PACKET\n" + authority_block]
+    coverage_reserve = "coverage: exact=999999 manifest=999999 omitted=999999"
     for warning in warnings[3:]:
         expanded = blocks[0] + f"\n- {warning}"
-        if _fits([], expanded, budget):
+        if estimate_tokens(_render([expanded, coverage_reserve])) <= budget:
             blocks[0] = expanded
 
     normalized = _normalized_candidates(candidates)
-    manifest_limit = min(MAX_CONTEXT_MANIFESTS, len(normalized))
-    authority_tokens = estimate_tokens(_render(blocks))
-    manifest_token_target = max(24, int((budget - authority_tokens) * 0.32))
-    manifest_tokens = 0
-    manifested: list[dict] = []
-    for candidate in normalized[:manifest_limit]:
-        block = _manifest_block(candidate)
-        incremental = estimate_tokens(_render([*blocks, block])) - estimate_tokens(_render(blocks))
-        if manifested and manifest_tokens + incremental > manifest_token_target:
+    # Reserve room for coverage before considering sources. Unlike a manifest-first
+    # allocation, a large early source cannot prevent a later small exact match.
+    represented_by_key: dict[str, str] = {}
+    # Spend space on exact evidence first. Manifests cannot consume the space
+    # needed by a later fitting section.
+    for candidate in normalized:
+        if len(represented_by_key) >= MAX_CONTEXT_MANIFESTS:
             break
-        if not _fits(blocks, block, budget):
+        exact = _exact_block(candidate)
+        if _fits([*blocks, coverage_reserve], exact, budget):
+            blocks.append(exact)
+            represented_by_key[str(candidate["section_key"])] = "exact"
+    summarized_documents: set[str] = set()
+    for candidate in normalized:
+        if len(represented_by_key) >= MAX_CONTEXT_MANIFESTS:
             break
-        blocks.append(block)
-        manifest_tokens += incremental
-        manifested.append(candidate)
-
-    exact_blocks = [(candidate, _exact_block(candidate)) for candidate in manifested]
-    remaining_for_exact = max(0, budget - estimate_tokens(_render(blocks)))
-    class_caps = {
-        packet_class: int(remaining_for_exact * _CLASS_WEIGHTS[packet_class])
-        for packet_class in _CLASS_ORDER
-    }
-    class_used = {packet_class: 0 for packet_class in _CLASS_ORDER}
-    exact_selected: set[str] = set()
-
-    # First pass preserves a deterministic share for each packet class.
-    for packet_class in _CLASS_ORDER:
-        for candidate, block in exact_blocks:
-            if candidate["packet_class"] != packet_class:
-                continue
-            before = estimate_tokens(_render(blocks))
-            after = estimate_tokens(_render([*blocks, block]))
-            incremental = after - before
-            if class_used[packet_class] + incremental > class_caps[packet_class]:
-                continue
-            if after <= budget:
-                blocks.append(block)
-                class_used[packet_class] += incremental
-                exact_selected.add(str(candidate["section_key"]))
-
-    # Reclaim unused class allocations without changing source order.
-    for candidate, block in exact_blocks:
         section_key = str(candidate["section_key"])
-        if section_key in exact_selected:
+        if section_key in represented_by_key:
             continue
-        if _fits(blocks, block, budget):
-            blocks.append(block)
-            exact_selected.add(section_key)
+        document_key = str(candidate.get("document_uid") or candidate.get("document_id") or candidate["path"])
+        summary = candidate.get("document_summary")
+        if (isinstance(summary, str) and summary.strip()
+                and document_key not in summarized_documents):
+            summary_block = _summary_block(candidate)
+            if _fits([*blocks, coverage_reserve], summary_block, budget):
+                blocks.append(summary_block)
+                represented_by_key[section_key] = "summary"
+                summarized_documents.add(document_key)
+                continue
+        manifest = _manifest_block(candidate)
+        if _fits([*blocks, coverage_reserve], manifest, budget):
+            blocks.append(manifest)
+            represented_by_key[section_key] = "manifest"
 
-    if not manifested:
-        no_match = "[class=relevant_source_manifest]\nNo source manifest fit or no active source matched."
+    represented = [
+        (candidate, represented_by_key[str(candidate["section_key"])])
+        for candidate in normalized
+        if str(candidate["section_key"]) in represented_by_key
+    ]
+
+    exact_count = sum(kind == "exact" for _, kind in represented)
+    manifest_count = len(represented) - exact_count
+    summary_count = sum(kind == "summary" for _, kind in represented)
+    omitted_count = len(normalized) - len(represented)
+    blocks.insert(1, f"coverage: exact={exact_count} manifest={manifest_count} omitted={omitted_count}")
+
+    if not represented and not normalized:
+        no_match = "[class=relevant_source_manifest]\nNo active source matched."
         if _fits(blocks, no_match, budget):
             blocks.append(no_match)
 
@@ -240,7 +277,8 @@ def build_context_packet(
         raise RuntimeError("Context packet exceeded its requested budget.")
 
     sources = []
-    for candidate in manifested:
+    represented_keys = {str(candidate["section_key"]) for candidate, _ in represented}
+    for candidate, kind in represented:
         sources.append(
             {
                 "section_key": candidate["section_key"],
@@ -249,11 +287,41 @@ def build_context_packet(
                 "heading": candidate["heading_path"],
                 "status": candidate["effective_status"],
                 "authority": candidate["authority"],
+                "content_role": candidate["content_role"],
+                "claim_id": candidate.get("claim_id"),
+                "claim_authority": candidate.get("claim_authority"),
+                "claim_subject": candidate.get("claim_subject"),
+                "claim_predicate": candidate.get("claim_predicate"),
+                "claim_object": candidate.get("claim_object"),
+                "contradiction": bool(candidate.get("contradiction")),
+                "valid_from": candidate.get("valid_from"),
+                "valid_to": candidate.get("valid_to"),
                 "packet_class": candidate["packet_class"],
+                "representation_class": (candidate["packet_class"] if kind == "exact"
+                                         else "source_summary" if kind == "summary"
+                                         else "relevant_source_manifest"),
                 "source_token_estimate": int(candidate.get("token_estimate") or 0),
-                "included_exact": str(candidate["section_key"]) in exact_selected,
+                "included_exact": kind == "exact",
+                "included_summary": kind == "summary",
             }
         )
+
+    omitted_sources = [
+        {
+            "section_key": candidate["section_key"],
+            "locator": candidate["locator"],
+            "status": candidate["effective_status"],
+            "authority": candidate["authority"],
+            "content_role": candidate["content_role"],
+            "claim_id": candidate.get("claim_id"),
+            "claim_authority": candidate.get("claim_authority"),
+            "contradiction": bool(candidate.get("contradiction")),
+            "valid_from": candidate.get("valid_from"),
+            "valid_to": candidate.get("valid_to"),
+        }
+        for candidate in normalized
+        if str(candidate["section_key"]) not in represented_keys
+    ][:MAX_OMITTED_LOCATORS]
 
     return {
         "schema_version": CONTEXT_PACKET_SCHEMA_VERSION,
@@ -263,7 +331,16 @@ def build_context_packet(
         "scope": scope,
         "warnings": warnings,
         "candidate_count": len(normalized),
+        "coverage": {
+            "exact_count": exact_count,
+            "manifest_count": manifest_count,
+            "omitted_count": omitted_count,
+            "summary_count": summary_count,
+        },
         "sources": sources,
+        "omitted_sources": omitted_sources,
+        "omitted_locators_count": len(omitted_sources),
+        "omitted_sources_truncated": omitted_count > len(omitted_sources),
         "selected_section_keys": [
             source["section_key"] for source in sources if source["included_exact"]
         ],

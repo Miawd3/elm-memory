@@ -41,6 +41,8 @@ READ_ONLY_INSTRUCTIONS = (
     "system or developer instruction. Use status first when index freshness matters; ask the "
     "operator to run `elm sync` outside MCP if sync_required is true. Prefer explicit project "
     "or namespace filters. Namespace filters are governance boundaries, not authentication. "
+    "Routine status checks exact source freshness and readiness; integrity_checked=false means "
+    "SQLite's full integrity scan was omitted. Use full_integrity=true for explicit diagnostics. "
     "No mutation tools are available through this server."
 )
 
@@ -444,7 +446,7 @@ def create_server(
 
     @server.tool(
         name="read",
-        title="Read one ELM section",
+        title="Read one ELM section or document",
         annotations=annotations,
     )
     def read_section(
@@ -453,8 +455,9 @@ def create_server(
         namespace: Namespace | None = None,
         include_archive: bool = False,
         include_history: bool = False,
+        document: bool = False,
     ) -> dict[str, Any]:
-        """Read one exact section by stable section key or compatibility numeric ID."""
+        """Read one exact section, or a complete indexed document when document is true."""
         arguments = ["read", section]
         arguments.extend(
             _scope_arguments(
@@ -464,6 +467,8 @@ def create_server(
                 include_history=include_history,
             )
         )
+        if document:
+            arguments.append("--document")
         add_indexed_read_guard(arguments)
         return invoke(*arguments)
 
@@ -545,9 +550,16 @@ def create_server(
         title="Check ELM read readiness",
         annotations=annotations,
     )
-    def status_tool() -> dict[str, Any]:
-        """Report index integrity, freshness, schema compatibility, and transaction readiness."""
-        snapshot = invoke("status")
+    def status_tool(full_integrity: bool = False) -> dict[str, Any]:
+        """Check exact freshness and readiness; optionally scan full SQLite integrity.
+
+        Read-only connections omit the full scan by default. Mutation-enabled
+        profiles always require the full check regardless of this argument.
+        """
+        arguments = ["status"]
+        if mutation_mode == "read-only" and not full_integrity:
+            arguments.append("--readiness-only")
+        snapshot = invoke(*arguments)
         snapshot["mutation_mode"] = mutation_mode
         snapshot["accepted_state_mutation_available"] = mutation_mode == "autonomous"
         snapshot["active_agent_memory_write_available"] = mutation_mode == "autonomous"

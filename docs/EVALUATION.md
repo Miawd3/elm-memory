@@ -22,6 +22,7 @@ Provider-backed pilots require an explicit local `--execute` flag. They are neve
 - Stable document and section identity.
 - Archive, project, namespace, and history filtering on every retrieval path.
 - Deterministic context budgets and privacy-minimized traces.
+- Context proposition fidelity, authority provenance, stable-key deduplication, coverage reporting, and later-candidate selection under tight budgets, including CLI/MCP parity for a synthetic governed claim.
 - Concurrent readers, serialized writers, stale-lock handling, and transaction recovery.
 - Proposal, claim, supersession, dispute, deletion, lease, source-CAS, and logical-lineage behavior.
 - CLI/MCP identity and scope equivalence.

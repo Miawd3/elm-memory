@@ -18,8 +18,15 @@ Replace `<project>` with the project folder name under `20_projects`. Raise or l
 elm status --json
 elm context "task description" --budget 700 --project my-project --json --no-trace
 elm read SECTION_KEY --project my-project --json
+elm read 20_projects/my-project/PROJECT_HUB.md --document --project my-project --json
 elm related 20_projects/my-project/PROJECT_HUB.md --project my-project --json
 ```
+
+`read --document` accepts an indexed document UID, stable section key, relative
+path, or compatibility numeric ID. It returns the canonical document text, including metadata and
+headings, under `text` with document provenance and a current-source check. The
+MCP `read` tool uses the same mode with `document=true`; its default remains an
+exact section read. A changed source must be synced before a complete read.
 
 If `status` reports `sync_required: true`, run:
 
@@ -57,6 +64,15 @@ An MCP agent should:
 3. pass an explicit `project` or `namespace` on scoped calls;
 4. use `context` before expanding exact sections;
 5. preserve source locators and authority labels in handoffs.
+
+In the read-only profile, routine MCP `status` checks exact Markdown freshness,
+schema, governance projection and pending transactions without scanning the entire
+SQLite file. It returns `check_mode: readiness`, `integrity_checked: false` and
+`quick_check: null`; a healthy result means read readiness, not audited file
+integrity. Use `status(full_integrity=true)` for explicit MCP diagnostics, or run
+`elm status --json` outside MCP for a full check that may exceed a host's tool
+deadline on large indexes. CLI `status --readiness-only` has the routine contract.
+Mutation-enabled profiles and mutation gates always retain full integrity checks.
 
 ## Autonomous memory
 

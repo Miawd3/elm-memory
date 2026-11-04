@@ -94,7 +94,7 @@ class PublicCliContractTests(unittest.TestCase):
         self.assertIn("ids", completed.stdout)
 
     def test_package_exposes_release_version(self) -> None:
-        self.assertEqual("1.0.0", elm_memory.__version__)
+        self.assertEqual("1.0.1.dev0", elm_memory.__version__)
 
     def test_module_exposes_release_version(self) -> None:
         environment = os.environ.copy()
@@ -109,7 +109,7 @@ class PublicCliContractTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertEqual("elm 1.0.0", completed.stdout.strip())
+        self.assertEqual("elm 1.0.1.dev0", completed.stdout.strip())
 
     def test_json_output_is_utf8_under_a_legacy_process_encoding(self) -> None:
         with tempfile.TemporaryDirectory(prefix="elm-unicode-") as temporary:
